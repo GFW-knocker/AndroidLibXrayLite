@@ -3,8 +3,9 @@ module github.com/GFW-knocker/AndroidLibXrayLite
 go 1.22.2
 
 require (
+
 	github.com/GFW-knocker/Xray-core v1.8.13-mahsa-r2
-	golang.org/x/mobile v0.0.0-20231127183840-76ac6878050a
+  golang.org/x/mobile v0.0.0-20240506190922-a1a533f289d3	
 	golang.org/x/sys v0.20.0
 )
 
