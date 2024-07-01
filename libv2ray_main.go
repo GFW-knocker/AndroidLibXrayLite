@@ -16,16 +16,16 @@ import (
 
 	mobasset "golang.org/x/mobile/asset"
 
-	v2net "github.com/xtls/xray-core/common/net"
-	v2filesystem "github.com/xtls/xray-core/common/platform/filesystem"
-	v2core "github.com/xtls/xray-core/core"
-	v2stats "github.com/xtls/xray-core/features/stats"
-	v2serial "github.com/xtls/xray-core/infra/conf/serial"
-	_ "github.com/xtls/xray-core/main/distro/all"
-	v2internet "github.com/xtls/xray-core/transport/internet"
+	v2net "github.com/GFW-knocker/Xray-core/common/net"
+	v2filesystem "github.com/GFW-knocker/Xray-core/common/platform/filesystem"
+	v2core "github.com/GFW-knocker/Xray-core/core"
+	v2stats "github.com/GFW-knocker/Xray-core/features/stats"
+	v2serial "github.com/GFW-knocker/Xray-core/infra/conf/serial"
+	_ "github.com/GFW-knocker/Xray-core/main/distro/all"
+	v2internet "github.com/GFW-knocker/Xray-core/transport/internet"
 
-	v2applog "github.com/xtls/xray-core/app/log"
-	v2commlog "github.com/xtls/xray-core/common/log"
+	v2applog "github.com/GFW-knocker/Xray-core/app/log"
+	v2commlog "github.com/GFW-knocker/Xray-core/common/log"
 )
 
 const (
@@ -201,6 +201,7 @@ func InitV2Env(envPath string, key string) {
 		return os.Open(path)
 	}
 }
+
 
 func MeasureOutboundDelay(ConfigureFileContent string, url string) (int64, error) {
 	config, err := v2serial.LoadJSONConfig(strings.NewReader(ConfigureFileContent))
