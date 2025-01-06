@@ -1,13 +1,17 @@
 package libv2ray
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +123,106 @@ func (v *V2RayPoint) StopLoop() (err error) {
 func (v *V2RayPoint) TerminateByExit() {
 	log.Println("OS Exit called")
 	os.Exit(0)
+}
+
+func getDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int, allow_sscrt bool, is_post bool, is_CF_API bool) (string, string, string) {
+	// return Body,Header,Err string
+
+	trp := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: allow_sscrt,
+		},
+	}
+
+	if my_proxy != "" {
+		proxyURL, err := url.Parse(my_proxy)
+		if err != nil {
+			return "", "", err.Error()
+		}
+		trp.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	client := &http.Client{
+		Transport: trp,
+		Timeout:   time.Duration(mytimeout) * time.Millisecond,
+	}
+
+	var req *http.Request
+
+	if is_post {
+		var err error
+		req, err = http.NewRequest("POST", myurl, bytes.NewBuffer([]byte(mydata)))
+		if err != nil {
+			return "", "", err.Error()
+		}
+
+		if is_CF_API {
+			req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+			req.Header.Set("Host", "api.cloudflareclient.com")
+			req.Header.Set("Connection", "Keep-Alive")
+			req.Header.Set("Accept-Encoding", "gzip")
+			req.Header.Set("User-Agent", "okhttp/3.12.1")
+			req.Header.Set("CF-Client-Version", "a-6.30-3596")
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+		}
+
+	} else {
+		var err error
+		req, err = http.NewRequest("GET", myurl, nil)
+		if err != nil {
+			return "", "", err.Error()
+		}
+
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", err.Error()
+	}
+	defer resp.Body.Close()
+
+	resp_header := resp.Header.Get("X-From-Server")
+
+	var resp_body = ""
+	if is_CF_API {
+
+		if resp.Header.Get("Content-Encoding") == "gzip" {
+			// Create a new GZIP reader
+			reader, err := gzip.NewReader(resp.Body)
+			if err != nil {
+				return "", "", err.Error()
+			}
+			defer reader.Close()
+
+			body, err := io.ReadAll(reader)
+			if err != nil {
+				return "", "", err.Error()
+			}
+			resp_body = string(body)
+
+		} else {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return "", "", err.Error()
+			}
+			resp_body = string(body)
+		}
+
+	} else {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", "", err.Error()
+		}
+		resp_body = string(body)
+	}
+
+	if resp.StatusCode > 299 {
+		return "", "", fmt.Sprintf("%s %d\n%s", "ERR status code:", resp.StatusCode, resp_body)
+	}
+
+	return resp_body, resp_header, ""
 }
 
 // Delegate Funcation
@@ -254,7 +358,7 @@ CheckVersionX string
 This func will return libv2ray binding version and V2Ray version used.
 */
 func CheckVersionX() string {
-	return fmt.Sprintf("Mahsa-XrayCore v%s-r3", v2core.Version())
+	return fmt.Sprintf("Mahsa-XrayCore v%s-r1", v2core.Version())
 }
 
 func measureInstDelay(ctx context.Context, inst *v2core.Instance, url string) (int64, error) {
