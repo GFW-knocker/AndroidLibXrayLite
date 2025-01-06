@@ -4,8 +4,8 @@ go 1.23.4
 
 require (
 	github.com/GFW-knocker/Xray-core v1.25.1-mahsa-r1
-	golang.org/x/mobile v0.0.0-20240506190922-a1a533f289d3
-	golang.org/x/sys v0.28.0
+	golang.org/x/mobile v0.0.0-20250103163954-5e5de4c85663
+	golang.org/x/sys v0.29.0
 )
 
 require (
@@ -41,12 +41,12 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/exp v0.0.0-20240531132922-fd00a4e0eefc // indirect
-	golang.org/x/mod v0.21.0 // indirect
+	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
-	golang.org/x/tools v0.26.0 // indirect
+	golang.org/x/tools v0.28.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241015192408-796eee8c2d53 // indirect
 	google.golang.org/grpc v1.69.2 // indirect
