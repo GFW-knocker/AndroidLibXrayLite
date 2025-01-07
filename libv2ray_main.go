@@ -125,8 +125,13 @@ func (v *V2RayPoint) TerminateByExit() {
 	os.Exit(0)
 }
 
-func getDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int, allow_sscrt bool, is_post bool, is_CF_API bool) (string, string, string) {
-	// return Body,Header,Err string
+type WebResult struct {
+	RespBody   string
+	RespHeader string
+	RespError  string
+}
+
+func GetDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int, allow_sscrt bool, is_post bool, is_CF_API bool) WebResult {
 
 	trp := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -137,7 +142,7 @@ func getDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 	if my_proxy != "" {
 		proxyURL, err := url.Parse(my_proxy)
 		if err != nil {
-			return "", "", err.Error()
+			return WebResult{"", "", err.Error()}
 		}
 		trp.Proxy = http.ProxyURL(proxyURL)
 	}
@@ -153,7 +158,7 @@ func getDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 		var err error
 		req, err = http.NewRequest("POST", myurl, bytes.NewBuffer([]byte(mydata)))
 		if err != nil {
-			return "", "", err.Error()
+			return WebResult{"", "", err.Error()}
 		}
 
 		if is_CF_API {
@@ -172,14 +177,14 @@ func getDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 		var err error
 		req, err = http.NewRequest("GET", myurl, nil)
 		if err != nil {
-			return "", "", err.Error()
+			return WebResult{"", "", err.Error()}
 		}
 
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err.Error()
+		return WebResult{"", "", err.Error()}
 	}
 	defer resp.Body.Close()
 
@@ -192,20 +197,20 @@ func getDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 			// Create a new GZIP reader
 			reader, err := gzip.NewReader(resp.Body)
 			if err != nil {
-				return "", "", err.Error()
+				return WebResult{"", "", err.Error()}
 			}
 			defer reader.Close()
 
 			body, err := io.ReadAll(reader)
 			if err != nil {
-				return "", "", err.Error()
+				return WebResult{"", "", err.Error()}
 			}
 			resp_body = string(body)
 
 		} else {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				return "", "", err.Error()
+				return WebResult{"", "", err.Error()}
 			}
 			resp_body = string(body)
 		}
@@ -213,16 +218,16 @@ func getDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 	} else {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return "", "", err.Error()
+			return WebResult{"", "", err.Error()}
 		}
 		resp_body = string(body)
 	}
 
 	if resp.StatusCode > 299 {
-		return "", "", fmt.Sprintf("%s %d\n%s", "ERR status code:", resp.StatusCode, resp_body)
+		return WebResult{"", resp_header, fmt.Sprintf("%s %d\n%s", "ERR status code:", resp.StatusCode, resp_body)}
 	}
 
-	return resp_body, resp_header, ""
+	return WebResult{resp_body, resp_header, ""}
 }
 
 // Delegate Funcation
