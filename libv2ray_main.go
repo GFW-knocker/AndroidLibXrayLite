@@ -131,6 +131,7 @@ type WebResult struct {
 	RespError  string
 }
 
+//export GetDataFromWeb WebResult
 func GetDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int, allow_sscrt bool, is_post bool, is_CF_API bool) WebResult {
 
 	trp := &http.Transport{
