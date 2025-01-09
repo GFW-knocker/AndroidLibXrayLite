@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -134,6 +135,17 @@ type WebResult struct {
 //export GetDataFromWeb *WebResult
 func GetDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int, allow_sscrt bool, is_post bool, is_CF_API bool) *WebResult {
 
+	uagent_list := []string{
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+		"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+	}
+
+	uaindex := rand.Intn(len(uagent_list))
+	uagent_string := uagent_list[uaindex]
+
 	trp := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: allow_sscrt,
@@ -172,11 +184,13 @@ func GetDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 		} else {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Accept", "application/json")
+			req.Header.Set("User-Agent", uagent_string)
 		}
 
 	} else {
 		var err error
 		req, err = http.NewRequest("GET", myurl, nil)
+		req.Header.Set("User-Agent", uagent_string)
 		if err != nil {
 			return &WebResult{"", "", err.Error()}
 		}
@@ -192,29 +206,20 @@ func GetDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 	resp_header := resp.Header.Get("X-From-Server")
 
 	var resp_body = ""
-	if is_CF_API {
 
-		if resp.Header.Get("Content-Encoding") == "gzip" {
-			// Create a new GZIP reader
-			reader, err := gzip.NewReader(resp.Body)
-			if err != nil {
-				return &WebResult{"", "", err.Error()}
-			}
-			defer reader.Close()
-
-			body, err := io.ReadAll(reader)
-			if err != nil {
-				return &WebResult{"", "", err.Error()}
-			}
-			resp_body = string(body)
-
-		} else {
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return &WebResult{"", "", err.Error()}
-			}
-			resp_body = string(body)
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		// Create a new GZIP reader
+		reader, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return &WebResult{"", "", err.Error()}
 		}
+		defer reader.Close()
+
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return &WebResult{"", "", err.Error()}
+		}
+		resp_body = string(body)
 
 	} else {
 		body, err := io.ReadAll(resp.Body)
