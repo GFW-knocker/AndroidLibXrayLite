@@ -1,10 +1,10 @@
 module github.com/GFW-knocker/AndroidLibXrayLite
 
-go 1.23.4
+go 1.23.5
 
 require (
 	github.com/GFW-knocker/Xray-core v1.25.1-mahsa-r1
-	golang.org/x/mobile v0.0.0-20241213221354-a87c1cf6cf46
+	golang.org/x/mobile v0.0.0-20250106192035-c31d5b91ecc3
 	golang.org/x/sys v0.29.0
 )
 
@@ -48,12 +48,10 @@ require (
 	golang.org/x/time v0.9.0 // indirect
 	golang.org/x/tools v0.29.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241015192408-796eee8c2d53 // indirect
-	google.golang.org/grpc v1.69.2 // indirect
-	google.golang.org/protobuf v1.36.1 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250122153221-138b5a5a4fd4 // indirect
+	google.golang.org/grpc v1.70.0 // indirect
+	google.golang.org/protobuf v1.36.3 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gvisor.dev/gvisor v0.0.0-20240320123526-dc6abceb7ff0 // indirect
+	gvisor.dev/gvisor v0.0.0-20241227193629-b8cde430ca0a // indirect
 	lukechampine.com/blake3 v1.3.0 // indirect
 )
-
-replace google.golang.org/grpc v1.69.2 => google.golang.org/grpc v1.66.3
