@@ -62,8 +62,17 @@ func (r *resolved) NextIP() {
 }
 
 func (r *resolved) currentIP() net.IP {
+	if r == nil {
+		return nil
+	}
+
 	r.ipLock.Lock()
 	defer r.ipLock.Unlock()
+
+	if r.IPs == nil || len(r.IPs) == 0 {
+		return nil
+	}
+
 	if len(r.IPs) > 0 {
 		return r.IPs[r.ipIdx]
 	}
@@ -277,6 +286,9 @@ func (d *ProtectedDialer) Dial(ctx context.Context,
 }
 
 func (d *ProtectedDialer) DestIpAddress() net.IP {
+	if d == nil || d.vServer == nil {
+		return nil
+	}
 	return d.vServer.currentIP()
 }
 
