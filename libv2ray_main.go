@@ -153,6 +153,13 @@ func GetDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: allow_sscrt,
 		},
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second, // dial timeout
+			KeepAlive: 15 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+		IdleConnTimeout:       15 * time.Second,
 	}
 
 	if my_proxy != "" {
