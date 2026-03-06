@@ -12,11 +12,10 @@ jobs:
     steps:
 
     - name: Checkout repository
-      uses: actions/checkout@v4
-
+      uses: actions/checkout@v6.0.0
       
     - name: Setup Golang
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6.1.0
       with:
         go-version-file: 'go.mod'
       
@@ -34,13 +33,17 @@ jobs:
     - name: Setup Android SDK Tools
       uses: android-actions/setup-android@v3.2.2
       with:
-        cmdline-tools-version: 10406996
-        
-    - name: Setup Android NDK
-      uses: nttld/setup-ndk@v1.5.0
-      with:
-        ndk-version: 'r27b'
-        link-to-sdk: true
+        log-accepted-android-sdk-licenses: false
+        cmdline-tools-version: '12266719'
+        packages: 'platforms;android-35 build-tools;35.0.0 platform-tools'
+
+    - name: Install NDK
+      run: |
+        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+          --channel=0 \
+          --install "ndk;28.2.13676358"
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> $GITHUB_ENV
+
 
     - name: Build
       run: |
