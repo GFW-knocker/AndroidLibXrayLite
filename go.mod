@@ -3,7 +3,7 @@ module github.com/GFW-knocker/AndroidLibXrayLite
 go 1.26.1
 
 require (
-	github.com/GFW-knocker/Xray-core v1.26.3-mahsa-r1
+	github.com/GFW-knocker/Xray-core v1.26.5-mahsa-r1
 	golang.org/x/mobile v0.0.0-20260217195705-b56b3793a9c4
 	golang.org/x/sys v0.42.0
 )
@@ -27,7 +27,7 @@ require (
 	github.com/pires/go-proxyproto v0.11.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af // indirect
+	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/sagernet/sing v0.6.10 // indirect
 	github.com/sagernet/sing-shadowsocks v0.2.8 // indirect
 	github.com/templexxx/cpu v0.1.1 // indirect
