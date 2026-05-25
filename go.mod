@@ -1,6 +1,6 @@
 module github.com/GFW-knocker/AndroidLibXrayLite
 
-go 1.26.1
+go 1.26.3
 
 require (
 	github.com/GFW-knocker/Xray-core v1.26.5-mahsa-r1
