@@ -26,6 +26,7 @@ uTLS fingerprint, browser header profile.
 | `timeout` | int | `8000` | Whole-operation budget, milliseconds. |
 | `allowInsecure` | bool | `false` | Skip certificate verification. |
 | `serverName` | string | URL host | SNI / certificate name override. |
+| `alpn` | string | `"auto"` | HTTP version: `auto`, `h1`, `h2`. See [ALPN](#alpn). |
 | `fingerprint` | string | `""` (stdlib TLS) | uTLS ClientHello. See [Fingerprints](#fingerprints). |
 | `fragment` | object | none | TLS ClientHello splitting. See [Fragment](#fragment). **Cannot be combined with `proxy`.** |
 | `ech` | object | none | Encrypted Client Hello. See [ECH](#ech). |
@@ -125,6 +126,44 @@ h=cloudflare-dns.com   tls=TLSv1.3   http=http/2   sni=encrypted     # ip + frag
 `h=` confirms the Host header survived the pin; `sni=encrypted` confirms ECH
 still applies on a pinned connection.
 
+### ALPN
+
+```json
+"alpn": "auto"
+```
+
+Pins the HTTP version. HTTP/3 is not supported — it runs over QUIC, and this
+transport is TCP only; `"h3"` is refused with that explanation rather than
+silently downgrading.
+
+| value | offer | behaviour |
+| --- | --- | --- |
+| `auto` (default) | `h2`, `http/1.1` | Server picks. Every major DoH resolver picks h2. |
+| `h1` | `http/1.1` only | h2 cannot be negotiated. |
+| `h2` | `h2` only | Handshake fails if the server will not speak h2. |
+
+`http/1.1`, `http1`, `http2`, `http/2` are accepted aliases, case-insensitive.
+`h2` requires an `https` url — cleartext h2c is not supported.
+
+On the standard TLS path the offer is ours, so `alpn` is enforced exactly. With
+`"h2"` the request is driven through `x/net/http2` directly, because
+`net/http`'s own HTTP/2 setup rewrites `NextProtos` to re-add `http/1.1` and
+would let a server downgrade.
+
+**With a `fingerprint`, `alpn` becomes an assertion rather than a control.** The
+uTLS ClientHello carries its own ALPN list, so the offer is not ours to change;
+a mismatch fails loudly instead of quietly using another version:
+
+```
+alpn "h1" requested but fingerprint "chrome" negotiated "h2": a uTLS ClientHello
+carries its own ALPN list, so pick a fingerprint that offers the version you
+want (or drop the fingerprint)
+```
+
+`chrome` and `firefox` offer `h2, http/1.1`; `android` and `randomizednoalpn`
+end up on HTTP/1.1. So for forced h1 with a fingerprint, use `android`; for
+forced h1 in general, drop `fingerprint`.
+
 ### Fingerprints
 
 `""` (default) uses the standard library: ECH works and HTTP/2 is negotiated
@@ -165,6 +204,7 @@ Every accepted key in one place. Two pairs are mutually exclusive:
   "timeout": 15000,
   "proxy": "",
   "ip": "",
+  "alpn": "auto",
   "allowInsecure": false,
   "serverName": "",
 
@@ -216,6 +256,7 @@ Result:
   "timeout": 20000,
   "proxy": "",
   "ip": "",
+  "alpn": "auto",
   "allowInsecure": false,
   "serverName": "",
 
@@ -435,10 +476,13 @@ fails rather than falling back to a plaintext SNI. A missing record gives
 not from whether a config was found. `EchAccepted == false` with no error means
 the server declined ECH.
 
-**HTTP/2.** Automatic on the default (stdlib) path. On the uTLS path ALPN comes
-from the fingerprint, so the handshake happens in the dialer and the negotiated
-protocol picks between `net/http` and `x/net/http2`. Redirects that cross an
-HTTP-version boundary fail with an explicit error rather than corrupt output.
+**HTTP versions.** HTTP/1.1 and HTTP/2 only; see [ALPN](#alpn) to pin one.
+HTTP/3 is out of scope — it needs QUIC, and neither `fragment` (which splits a
+TLS record on a TCP stream) nor `proxy` (CONNECT and SOCKS5 are TCP) could
+follow it there. On the uTLS path ALPN comes from the fingerprint, so the
+handshake happens in the dialer and the negotiated protocol picks between
+`net/http` and `x/net/http2`. Redirects that cross an HTTP-version boundary fail
+with an explicit error rather than corrupt output.
 
 **Body cap** 32 MiB; DoH response cap 64 KiB.
 

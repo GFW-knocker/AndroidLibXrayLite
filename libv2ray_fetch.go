@@ -100,6 +100,12 @@ type transportOptions struct {
 	AllowInsecure bool `json:"allowInsecure"`
 	// ServerName overrides the SNI / certificate name.
 	ServerName string `json:"serverName"`
+	// ALPN pins the HTTP version: "auto" (default) offers h2 and http/1.1 and
+	// lets the server pick, "h1" offers only http/1.1, "h2" offers only h2.
+	// On the uTLS path the ClientHello decides what is offered, so there this
+	// acts as an assertion: a mismatch fails loudly instead of silently
+	// using a version the caller did not ask for. HTTP/3 is not supported.
+	ALPN string `json:"alpn"`
 	// Fingerprint selects a uTLS ClientHello ("chrome", "firefox", ...).
 	// Empty means standard library crypto/tls, which is the recommended
 	// default: ECH works and HTTP/2 is negotiated automatically.
@@ -147,6 +153,51 @@ func (o *transportOptions) echEnabled() bool {
 	return o.Ech != nil && (o.Ech.DoH != "" || o.Ech.ConfigList != "")
 }
 
+// Accepted values of the alpn option, after normalisation.
+const (
+	alpnAuto = "auto"
+	alpnH1   = "h1"
+	alpnH2   = "h2"
+)
+
+func (o *transportOptions) alpnMode() (string, error) {
+	switch strings.ToLower(strings.TrimSpace(o.ALPN)) {
+	case "", "auto":
+		return alpnAuto, nil
+	case "h1", "http1", "http/1.1", "http1.1":
+		return alpnH1, nil
+	case "h2", "http2", "http/2":
+		return alpnH2, nil
+	case "h3", "http3", "http/3":
+		return "", fmt.Errorf("alpn %q is not supported: HTTP/3 runs over QUIC, "+
+			"which this transport does not implement", o.ALPN)
+	default:
+		return "", fmt.Errorf("unknown alpn %q (use \"auto\", \"h1\" or \"h2\")", o.ALPN)
+	}
+}
+
+// alpnOffer is the ALPN list to advertise for a given mode on the standard
+// TLS path, where the offer is ours to choose.
+func alpnOffer(mode string) []string {
+	switch mode {
+	case alpnH1:
+		return []string{"http/1.1"}
+	case alpnH2:
+		return []string{"h2"}
+	default:
+		return []string{"h2", "http/1.1"}
+	}
+}
+
+// negotiatedName normalises a NegotiatedProtocol for comparison: an empty
+// value means the peer sent no ALPN, which is HTTP/1.1.
+func negotiatedName(proto string) string {
+	if proto == "" {
+		return "http/1.1"
+	}
+	return proto
+}
+
 func (o *transportOptions) validate() error {
 	if o.IP != "" && net.ParseIP(o.IP) == nil {
 		return fmt.Errorf("ip %q is not a valid IP address", o.IP)
@@ -155,6 +206,9 @@ func (o *transportOptions) validate() error {
 		return fmt.Errorf("fragment cannot be combined with proxy: the proxy " +
 			"reassembles the stream, so fragmentation would be a silent no-op; " +
 			"configure fragmentation in the xray outbound instead")
+	}
+	if _, err := o.alpnMode(); err != nil {
+		return err
 	}
 	if o.Fingerprint == "" {
 		return nil
@@ -491,7 +545,15 @@ func (o *transportOptions) roundTripper(ctx context.Context, u *url.URL, state *
 		return nil, nil, err
 	}
 
+	mode, err := o.alpnMode()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	if u.Scheme == "http" {
+		if mode == alpnH2 {
+			return nil, nil, fmt.Errorf("alpn \"h2\" needs an https url: cleartext h2c is not supported")
+		}
 		return &http.Transport{
 			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 				return o.rawDial(ctx, addr, frag)
@@ -507,12 +569,22 @@ func (o *transportOptions) roundTripper(ctx context.Context, u *url.URL, state *
 	}
 
 	if o.Fingerprint == "" {
+		if mode == alpnH2 {
+			// net/http's HTTP/2 setup rewrites NextProtos to include
+			// http/1.1, so the server could still downgrade. Driving
+			// x/net/http2 directly keeps the offer strictly h2.
+			return &http2.Transport{
+				DialTLSContext: func(ctx context.Context, _, addr string, _ *gotls.Config) (net.Conn, error) {
+					return o.stdTLSDial(ctx, addr, frag, u.Hostname(), echList, alpnOffer(mode), state)
+				},
+			}, noop, nil
+		}
 		return &http.Transport{
 			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 				return o.rawDial(ctx, addr, frag)
 			},
-			TLSClientConfig:       o.tlsConfig(u.Hostname(), echList, []string{"h2", "http/1.1"}),
-			ForceAttemptHTTP2:     true,
+			TLSClientConfig:       o.tlsConfig(u.Hostname(), echList, alpnOffer(mode)),
+			ForceAttemptHTTP2:     mode == alpnAuto,
 			DisableKeepAlives:     true,
 			TLSHandshakeTimeout:   o.timeout(),
 			ResponseHeaderTimeout: o.timeout(),
@@ -541,6 +613,15 @@ func (o *transportOptions) roundTripper(ctx context.Context, u *url.URL, state *
 			return nil, err
 		}
 		cs := uc.ConnectionState()
+		// The ClientHello owns the ALPN offer here, so alpn can only be
+		// checked after the fact rather than enforced up front.
+		if mode != alpnAuto && negotiatedName(cs.NegotiatedProtocol) != negotiatedName(alpnOffer(mode)[0]) {
+			uc.Close()
+			return nil, fmt.Errorf("alpn %q requested but fingerprint %q negotiated %q: "+
+				"a uTLS ClientHello carries its own ALPN list, so pick a fingerprint "+
+				"that offers the version you want (or drop the fingerprint)",
+				mode, o.Fingerprint, negotiatedName(cs.NegotiatedProtocol))
+		}
 		if err := state.record(cs.NegotiatedProtocol, cs.ECHAccepted); err != nil {
 			uc.Close()
 			return nil, err
@@ -571,6 +652,28 @@ func (o *transportOptions) roundTripper(ctx context.Context, u *url.URL, state *
 		DisableKeepAlives:     true,
 		ResponseHeaderTimeout: o.timeout(),
 	}, handoff.discard, nil
+}
+
+// stdTLSDial dials and completes a standard-library TLS handshake with an
+// exact ALPN offer. Used when a specific HTTP version is required and net/http
+// cannot be trusted to leave NextProtos alone.
+func (o *transportOptions) stdTLSDial(ctx context.Context, addr string, frag *xfragment.Config,
+	host string, echList []byte, alpn []string, state *connState) (net.Conn, error) {
+	raw, err := o.rawDial(ctx, addr, frag)
+	if err != nil {
+		return nil, err
+	}
+	c := gotls.Client(raw, o.tlsConfig(host, echList, alpn))
+	if err := c.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	cs := c.ConnectionState()
+	if err := state.record(cs.NegotiatedProtocol, cs.ECHAccepted); err != nil {
+		c.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 func canonicalAddr(u *url.URL) string {
