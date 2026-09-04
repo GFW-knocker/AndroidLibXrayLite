@@ -86,6 +86,14 @@ type transportOptions struct {
 	// Proxy is an http:// or socks5:// URL. Empty means direct, which follows
 	// OS routing exactly like GetDataFromWeb does.
 	Proxy string `json:"proxy"`
+	// IP pins the address to connect to, skipping DNS resolution of the URL's
+	// host. The host is still used for SNI, certificate verification and the
+	// Host header, so this is how you front a request through a chosen edge
+	// address. The port keeps coming from the URL, so a non-standard one goes
+	// in the URL itself (https://host:2053/path). Empty means normal
+	// resolution. Applies through Proxy too: the CONNECT / SOCKS request then
+	// names the pinned address.
+	IP string `json:"ip"`
 	// Timeout for the whole operation, in milliseconds.
 	Timeout int `json:"timeout"`
 	// AllowInsecure skips certificate verification.
@@ -140,6 +148,9 @@ func (o *transportOptions) echEnabled() bool {
 }
 
 func (o *transportOptions) validate() error {
+	if o.IP != "" && net.ParseIP(o.IP) == nil {
+		return fmt.Errorf("ip %q is not a valid IP address", o.IP)
+	}
 	if o.Fragment != nil && o.Proxy != "" {
 		return fmt.Errorf("fragment cannot be combined with proxy: the proxy " +
 			"reassembles the stream, so fragmentation would be a silent no-op; " +
@@ -184,6 +195,17 @@ func (o *transportOptions) validate() error {
 func (o *transportOptions) rawDial(ctx context.Context, addr string, frag *xfragment.Config) (net.Conn, error) {
 	var conn net.Conn
 	var err error
+
+	// A pinned IP replaces only the address; the caller has already built the
+	// TLS config and request from the URL's host, so SNI, certificate
+	// verification and the Host header are untouched.
+	if o.IP != "" {
+		_, port, serr := net.SplitHostPort(addr)
+		if serr != nil {
+			return nil, fmt.Errorf("cannot pin ip for %q: %w", addr, serr)
+		}
+		addr = net.JoinHostPort(o.IP, port)
+	}
 
 	if o.Proxy == "" {
 		d := &net.Dialer{Timeout: o.timeout(), KeepAlive: 15 * time.Second}
@@ -335,8 +357,12 @@ func (o *transportOptions) echConfigList(ctx context.Context, host string) ([]by
 	}
 
 	// Look up without ECH, otherwise the lookup would itself need a lookup.
+	// IP is dropped too: it pins the request's own host, and the ECH resolver
+	// is a different server. Pin that one by putting a literal address in
+	// ech.doh instead, e.g. https://1.1.1.1/dns-query.
 	lookupOpts := *o
 	lookupOpts.Ech = nil
+	lookupOpts.IP = ""
 
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(domain), dns.TypeHTTPS)

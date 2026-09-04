@@ -22,6 +22,7 @@ uTLS fingerprint, browser header profile.
 | key | type | default | meaning |
 | --- | --- | --- | --- |
 | `proxy` | string | `""` (direct) | `http://host:port` or `socks5://host:port`, optional `user:pass@`. Empty follows OS routing, exactly like `GetDataFromWeb`. |
+| `ip` | string | `""` | Connect to this address instead of resolving the URL host. See [Pinned IP](#pinned-ip). |
 | `timeout` | int | `8000` | Whole-operation budget, milliseconds. |
 | `allowInsecure` | bool | `false` | Skip certificate verification. |
 | `serverName` | string | URL host | SNI / certificate name override. |
@@ -91,6 +92,39 @@ The lookup runs over **this call's own transport**, so it honours `proxy` and
 the DNS query would leave the device on a different path than the request.
 Results are cached until the record's TTL expires.
 
+### Pinned IP
+
+```json
+"ip": "188.114.97.6"
+```
+
+Connects to that address instead of resolving the URL's host. Everything else
+still derives from the URL — SNI, certificate verification and the `Host` header
+all keep the original hostname — so this fronts the request through a chosen
+edge address rather than rewriting it.
+
+* The port still comes from the URL, so put a non-standard one there:
+  `https://cloudflare-dns.com:2053/dns-query`.
+* IPv4 and IPv6 literals both work. A hostname is rejected up front.
+* Applies through `proxy` too: the CONNECT / SOCKS request names the pinned
+  address, so the proxy dials it.
+* `fragment` and `ech` apply exactly as they do without a pin.
+* **Not inherited by the ECH lookup.** `ip` pins this request's host, and the
+  ECH resolver is a different server. Pin that one by putting a literal address
+  in `ech.doh`, e.g. `https://1.1.1.1/dns-query`.
+* Empty or absent means normal resolution.
+
+Verified against `cloudflare-dns.com` pinned to `188.114.97.6`, reading back
+Cloudflare's own `/cdn-cgi/trace`:
+
+```
+h=cloudflare-dns.com   tls=TLSv1.3   http=http/2   sni=plaintext     # ip + fragment
+h=cloudflare-dns.com   tls=TLSv1.3   http=http/2   sni=encrypted     # ip + fragment + ech
+```
+
+`h=` confirms the Host header survived the pin; `sni=encrypted` confirms ECH
+still applies on a pinned connection.
+
 ### Fingerprints
 
 `""` (default) uses the standard library: ECH works and HTTP/2 is negotiated
@@ -130,6 +164,7 @@ Every accepted key in one place. Two pairs are mutually exclusive:
 
   "timeout": 15000,
   "proxy": "",
+  "ip": "",
   "allowInsecure": false,
   "serverName": "",
 
@@ -180,6 +215,7 @@ Result:
 
   "timeout": 20000,
   "proxy": "",
+  "ip": "",
   "allowInsecure": false,
   "serverName": "",
 
