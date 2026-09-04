@@ -4,7 +4,9 @@ go 1.26.7
 
 require (
 	github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r1
+	github.com/miekg/dns v1.1.73
 	golang.org/x/mobile v0.0.0-20260217195705-b56b3793a9c4
+	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0
 )
 
@@ -29,7 +31,6 @@ require (
 	github.com/libp2p/go-nat v1.0.1-0.20250821073202-01afc089f138 // indirect
 	github.com/libp2p/go-netroute v0.2.1 // indirect
 	github.com/mahsanet/dnstt v0.0.0-20260208072530-0ad0213669c6 // indirect
-	github.com/miekg/dns v1.1.73 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/logging v0.2.4 // indirect
@@ -54,7 +55,6 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
