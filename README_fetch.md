@@ -421,8 +421,14 @@ if (d.getRespError().isEmpty() && d.getRcode().equals("NOERROR")) {
 }
 ```
 
-Both calls block. Run them off the main thread (`Thread`, `ExecutorService`, or
-a coroutine on `Dispatchers.IO`), as `wget_module` already does.
+### Always call these off the main thread
+
+`fetchWeb` and `resolveDoH` are **synchronous**: each one performs the whole
+exchange — DNS, TCP, TLS handshake, HTTP round trip, body read — before it
+returns, holding the calling thread for up to `timeout` milliseconds. Use a
+`Thread`, an `ExecutorService`, or a coroutine on `Dispatchers.IO`.
+invoke static methods from a background thread.Being inside a `Service` does not help,
+since service callbacks also run on the main thread.
 
 ---
 
