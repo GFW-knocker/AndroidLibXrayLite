@@ -15,7 +15,128 @@ uTLS fingerprint, browser header profile.
 
 ---
 
-## 1. Options JSON
+## 1. Full options reference
+
+Every accepted key in one place. Two pairs are mutually exclusive:
+
+* `fragment` and `proxy` — a proxy reassembles the stream, so the combination is
+  rejected outright. Fragment on the direct path.
+* `ech.configList` and `ech.domain` + `ech.doh` — a literal config list skips the
+  DNS lookup.
+
+### `FetchWeb`
+
+```json
+{
+  "url": "https://example.com/api/sub",
+  "method": "GET",
+  "data": "",
+
+  "timeout": 15000,
+  "proxy": "",
+  "ip": "",
+  "alpn": "auto",
+  "allowInsecure": false,
+  "serverName": "",
+
+  "fingerprint": "chrome",
+  "fragment": {
+    "packets": "tlshello",
+    "lengths": ["1-3", "10-30"],
+    "delays":  ["5-15", "5-15"],
+    "maxSplit": "6-10"
+  },
+  "ech": {
+    "domain": "encryptedsni.com",
+    "doh": "https://1.1.1.1/dns-query",
+    "configList": ""
+  },
+
+  "browser": "chrome",
+  "variant": "nav",
+  "userAgent": "",
+  "headers": { "X-Request-Id": "abc123" }
+}
+```
+
+To go through xray instead, set `"proxy": "http://127.0.0.1:10809"` and remove
+`fragment`. Nothing else changes.
+
+Result:
+
+```json
+{
+  "RespBody":    "<!DOCTYPE html>...",
+  "RespHeader":  "",
+  "RespHeaders": "{\"Content-Type\":[\"text/html\"]}",
+  "RespError":   "",
+  "StatusCode":  200,
+  "Proto":       "HTTP/2.0",
+  "EchAccepted": true
+}
+```
+
+### `ResolveDoH`
+
+```json
+{
+  "domain": "www.google.com",
+  "type": "A",
+  "server": "https://1.1.1.1/dns-query",
+
+  "timeout": 20000,
+  "proxy": "",
+  "ip": "",
+  "alpn": "auto",
+  "allowInsecure": false,
+  "serverName": "",
+
+  "fingerprint": "",
+  "fragment": {
+    "packets": "tlshello",
+    "lengths": ["1-3", "10-30"],
+    "delays":  ["5-15", "5-15"],
+    "maxSplit": "6-10"
+  },
+  "ech": {
+    "domain": "encryptedsni.com",
+    "doh": "https://1.1.1.1/dns-query",
+    "configList": ""
+  },
+
+  "browser": "chrome",
+  "variant": "fetch",
+  "userAgent": "",
+  "headers": { "X-Request-Id": "abc123" }
+}
+```
+
+Here `ech` protects the SNI of the **DoH connection itself**, so it needs the
+DoH host to have a usable ECHConfigList. No major public resolver publishes one
+today (`cloudflare-dns.com`, `dns.google`, `dns.quad9.net`, `dns.adguard-dns.com`
+all lack an `ech=` key), but `ech.domain` can borrow a config from another name
+at the same provider: `"server": "https://cloudflare-dns.com/dns-query"` with
+`"domain": "encryptedsni.com"` yields `EchAccepted: true`, because what has to
+match is the ECH public name, not the request host.
+
+Result:
+
+```json
+{
+  "Answers":     "[{\"name\":\"www.google.com\",\"type\":\"A\",\"ttl\":295,\"value\":\"142.251.150.119\"}]",
+  "IPs":         "142.251.150.119,142.251.151.119",
+  "Rcode":       "NOERROR",
+  "TTL":         295,
+  "Proto":       "HTTP/2.0",
+  "EchAccepted": false,
+  "RespError":   ""
+}
+```
+
+---
+
+
+## 2. Options JSON
 
 ### Shared transport options
 
@@ -181,126 +302,6 @@ fail at connect time.
 
 `android` / `helloandroid_11_okhttp` negotiates TLS 1.2 with no ALPN, so it is
 HTTP/1.1 only — a coherent pairing for `"userAgent": "okhttp/3.12.1"`.
-
----
-
-## 2. Full options reference
-
-Every accepted key in one place. Two pairs are mutually exclusive:
-
-* `fragment` and `proxy` — a proxy reassembles the stream, so the combination is
-  rejected outright. Fragment on the direct path.
-* `ech.configList` and `ech.domain` + `ech.doh` — a literal config list skips the
-  DNS lookup.
-
-### `FetchWeb`
-
-```json
-{
-  "url": "https://example.com/api/sub",
-  "method": "GET",
-  "data": "",
-
-  "timeout": 15000,
-  "proxy": "",
-  "ip": "",
-  "alpn": "auto",
-  "allowInsecure": false,
-  "serverName": "",
-
-  "fingerprint": "chrome",
-  "fragment": {
-    "packets": "tlshello",
-    "lengths": ["1-3", "10-30"],
-    "delays":  ["5-15", "5-15"],
-    "maxSplit": "6-10"
-  },
-  "ech": {
-    "domain": "encryptedsni.com",
-    "doh": "https://1.1.1.1/dns-query",
-    "configList": ""
-  },
-
-  "browser": "chrome",
-  "variant": "nav",
-  "userAgent": "",
-  "headers": { "X-Request-Id": "abc123" }
-}
-```
-
-To go through xray instead, set `"proxy": "http://127.0.0.1:10809"` and remove
-`fragment`. Nothing else changes.
-
-Result:
-
-```json
-{
-  "RespBody":    "<!DOCTYPE html>...",
-  "RespHeader":  "",
-  "RespHeaders": "{\"Content-Type\":[\"text/html\"]}",
-  "RespError":   "",
-  "StatusCode":  200,
-  "Proto":       "HTTP/2.0",
-  "EchAccepted": true
-}
-```
-
-### `ResolveDoH`
-
-```json
-{
-  "domain": "www.google.com",
-  "type": "A",
-  "server": "https://1.1.1.1/dns-query",
-
-  "timeout": 20000,
-  "proxy": "",
-  "ip": "",
-  "alpn": "auto",
-  "allowInsecure": false,
-  "serverName": "",
-
-  "fingerprint": "",
-  "fragment": {
-    "packets": "tlshello",
-    "lengths": ["1-3", "10-30"],
-    "delays":  ["5-15", "5-15"],
-    "maxSplit": "6-10"
-  },
-  "ech": {
-    "domain": "encryptedsni.com",
-    "doh": "https://1.1.1.1/dns-query",
-    "configList": ""
-  },
-
-  "browser": "chrome",
-  "variant": "fetch",
-  "userAgent": "",
-  "headers": { "X-Request-Id": "abc123" }
-}
-```
-
-Here `ech` protects the SNI of the **DoH connection itself**, so it needs the
-DoH host to have a usable ECHConfigList. No major public resolver publishes one
-today (`cloudflare-dns.com`, `dns.google`, `dns.quad9.net`, `dns.adguard-dns.com`
-all lack an `ech=` key), but `ech.domain` can borrow a config from another name
-at the same provider: `"server": "https://cloudflare-dns.com/dns-query"` with
-`"domain": "encryptedsni.com"` yields `EchAccepted: true`, because what has to
-match is the ECH public name, not the request host.
-
-Result:
-
-```json
-{
-  "Answers":     "[{\"name\":\"www.google.com\",\"type\":\"A\",\"ttl\":295,\"value\":\"142.251.150.119\"}]",
-  "IPs":         "142.251.150.119,142.251.151.119",
-  "Rcode":       "NOERROR",
-  "TTL":         295,
-  "Proto":       "HTTP/2.0",
-  "EchAccepted": false,
-  "RespError":   ""
-}
-```
 
 ---
 
@@ -486,5 +487,5 @@ with an explicit error rather than corrupt output.
 
 **Body cap** 32 MiB; DoH response cap 64 KiB.
 
-**Proxy schemes** `http://` (CONNECT, Basic auth supported) and
-`socks5://` / `socks5h://`. `https://` proxies are not supported.
+**Proxy schemes** `http://` (CONNECT, Basic auth supported) ,
+`socks5://` , `socks5h://`. note that `https://` proxies are not supported because main usage is to connect to Localhost xray inbound.
