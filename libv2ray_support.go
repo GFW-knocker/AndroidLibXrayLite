@@ -259,7 +259,7 @@ func (d *ProtectedDialer) Dial(ctx context.Context,
 		}
 
 		curIP := d.vServer.currentIP()
-		conn, err := d.fdConn(ctx, curIP, d.vServer.Port, fd)
+		conn, err := d.fdConn(ctx, curIP, d.vServer.Port, fd, dest.Network)
 		if err != nil {
 			d.vServer.NextIP()
 			return nil, err
@@ -282,7 +282,7 @@ func (d *ProtectedDialer) Dial(ctx context.Context,
 
 	// use the first resolved address.
 	// the result IP may vary, eg: IPv6 addrs comes first if client has ipv6 address
-	return d.fdConn(ctx, resolved.IPs[0], resolved.Port, fd)
+	return d.fdConn(ctx, resolved.IPs[0], resolved.Port, fd, dest.Network)
 }
 
 func (d *ProtectedDialer) DestIpAddress() net.IP {
@@ -292,7 +292,7 @@ func (d *ProtectedDialer) DestIpAddress() net.IP {
 	return d.vServer.currentIP()
 }
 
-func (d *ProtectedDialer) fdConn(ctx context.Context, ip net.IP, port int, fd int) (net.Conn, error) {
+func (d *ProtectedDialer) fdConn(ctx context.Context, ip net.IP, port int, fd int, network v2net.Network) (net.Conn, error) {
 
 	defer unix.Close(fd)
 
@@ -302,14 +302,20 @@ func (d *ProtectedDialer) fdConn(ctx context.Context, ip net.IP, port int, fd in
 		return nil, errors.New("fail to protect")
 	}
 
-	sa := &unix.SockaddrInet6{
-		Port: port,
-	}
-	copy(sa.Addr[:], ip.To16())
+	// UDP sockets are deliberately left unconnected. xray consumers write
+	// through PacketConnWrapper.Write -> PacketConn.WriteTo(p, Dest), and a
+	// connected UDP socket cannot be retargeted, which would break WireGuard
+	// endpoint roaming and multi-peer configs.
+	if network != v2net.Network_UDP {
+		sa := &unix.SockaddrInet6{
+			Port: port,
+		}
+		copy(sa.Addr[:], ip.To16())
 
-	if err := unix.Connect(fd, sa); err != nil {
-		log.Printf("fdConn unix.Connect err, Close Fd: %d Err: %v", fd, err)
-		return nil, err
+		if err := unix.Connect(fd, sa); err != nil {
+			log.Printf("fdConn unix.Connect err, Close Fd: %d Err: %v", fd, err)
+			return nil, err
+		}
 	}
 
 	file := os.NewFile(uintptr(fd), "Socket")
@@ -319,6 +325,26 @@ func (d *ProtectedDialer) fdConn(ctx context.Context, ip net.IP, port int, fd in
 	}
 
 	defer file.Close()
+
+	if network == v2net.Network_UDP {
+		// internet.DialSystem is expected to hand back a *PacketConnWrapper
+		// for UDP: proxy/wireguard, mKCP, hysteria and splithttp all switch on
+		// that concrete type and panic on anything else. xray's own
+		// DefaultSystemDialer returns the same shape (ListenPacket + Dest), so
+		// this keeps Android on the path every other platform takes.
+		pktConn, err := net.FilePacketConn(file)
+		if err != nil {
+			log.Printf("fdConn FilePacketConn Close Fd: %d Err: %v", fd, err)
+			return nil, err
+		}
+		// Dest must be a *net.UDPAddr: callers reach it through
+		// PacketConnWrapper.RemoteAddr() and assert that type.
+		return &v2internet.PacketConnWrapper{
+			PacketConn: pktConn,
+			Dest:       &net.UDPAddr{IP: ip, Port: port},
+		}, nil
+	}
+
 	//Closing conn does not affect file, and closing file does not affect conn.
 	conn, err := net.FileConn(file)
 	if err != nil {
