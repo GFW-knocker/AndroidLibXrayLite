@@ -302,11 +302,22 @@ func (d *ProtectedDialer) fdConn(ctx context.Context, ip net.IP, port int, fd in
 		return nil, errors.New("fail to protect")
 	}
 
-	// UDP sockets are deliberately left unconnected. xray consumers write
-	// through PacketConnWrapper.Write -> PacketConn.WriteTo(p, Dest), and a
-	// connected UDP socket cannot be retargeted, which would break WireGuard
-	// endpoint roaming and multi-peer configs.
-	if network != v2net.Network_UDP {
+	if network == v2net.Network_UDP {
+		// UDP sockets are deliberately left unconnected: consumers write
+		// through PacketConnWrapper.Write -> PacketConn.WriteTo(p, Dest), and a
+		// connected UDP socket cannot be retargeted, which would break
+		// WireGuard endpoint roaming and multi-peer configs.
+		//
+		// Bind to the wildcard anyway so the socket owns a real local port
+		// before anything asks for it. DefaultSystemDialer gets one from
+		// ListenPacket, and wireguard's bind.Open() reports
+		// LocalAddr().(*net.UDPAddr).Port upward; an unbound socket would
+		// answer :0 until its first send.
+		if err := unix.Bind(fd, &unix.SockaddrInet6{}); err != nil {
+			log.Printf("fdConn unix.Bind err, Close Fd: %d Err: %v", fd, err)
+			return nil, err
+		}
+	} else {
 		sa := &unix.SockaddrInet6{
 			Port: port,
 		}
