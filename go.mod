@@ -3,7 +3,7 @@ module github.com/GFW-knocker/AndroidLibXrayLite
 go 1.26.7
 
 require (
-	github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r1
+	github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r3
 	github.com/miekg/dns v1.1.73
 	golang.org/x/mobile v0.0.0-20260217195705-b56b3793a9c4
 	golang.org/x/net v0.58.0
@@ -11,7 +11,7 @@ require (
 )
 
 require (
-	github.com/GFW-knocker/wireguard v1.0.6 // indirect
+	github.com/GFW-knocker/wireguard v1.0.7 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/apernet/quic-go v0.61.1-0.20260806010916-184d081eef3e // indirect
 	github.com/cloudflare/circl v1.6.5 // indirect
@@ -51,7 +51,7 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xtaci/kcp-go/v5 v5.6.8 // indirect
 	github.com/xtaci/smux v1.5.24 // indirect
-	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f // indirect
+	github.com/xtls/reality v0.0.0-20260908062103-8cdf7bf9c7f0 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
@@ -61,7 +61,7 @@ require (
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.1 // indirect
+	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gvisor.dev/gvisor v0.0.0-20260122175437-89a5d21be8f0 // indirect
