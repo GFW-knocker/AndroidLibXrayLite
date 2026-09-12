@@ -820,6 +820,47 @@ func (o *transportOptions) applyHeaders(h http.Header, variantDefault string) {
 	}
 }
 
+// userAgentOnly returns just the User-Agent the browser profile would pick,
+// without any of the headers that go with it.
+func (o *transportOptions) userAgentOnly() string {
+	if o.UserAgent != "" {
+		return o.UserAgent
+	}
+	browser := o.Browser
+	if browser == "" {
+		browser = "chrome"
+	}
+	// An empty variant skips the context block, so only the browser identity is
+	// generated. "golang" deletes the header outright, which is the profile
+	// asking for net/http's own default; an empty result preserves that.
+	probe := http.Header{}
+	probe.Set("User-Agent", browser)
+	xutils.TryDefaultHeadersWith(probe, "")
+	return probe.Get("User-Agent")
+}
+
+// applyDoHHeaders shapes a resolver request rather than a browser one.
+//
+// RFC 8484 needs only the two content types. Real DoH clients add a User-Agent
+// and stop there: Chrome's secure DNS and Firefox's TRR issue these from the
+// network stack, not from a page, so they carry no Sec-Fetch-*, no client
+// hints, no DNT and no Accept-Language. Sending those on a resolver query is a
+// tell rather than camouflage, which is why the full browser profile is
+// deliberately not used here.
+//
+// The User-Agent is kept because dropping it would leave net/http's
+// "Go-http-client/1.1", which is more distinctive than any browser string.
+func (o *transportOptions) applyDoHHeaders(h http.Header) {
+	h.Set("Accept", "application/dns-message")
+	h.Set("Content-Type", "application/dns-message")
+	if ua := o.userAgentOnly(); ua != "" {
+		h.Set("User-Agent", ua)
+	}
+	for k, v := range o.Headers {
+		h.Set(k, v)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FetchWeb
 // ---------------------------------------------------------------------------
@@ -1069,16 +1110,15 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 	if err != nil {
 		return nil, "", false, err
 	}
-	o.applyHeaders(req.Header, "fetch")
-	req.Header.Set("Content-Type", "application/dns-message")
-	req.Header.Set("Accept", "application/dns-message")
-	// Deliberately no X-Padding. xray's own DoH clients send one, but it is an
-	// xray convention rather than a web one: no RFC defines it and no browser
-	// emits it, so it marks the client as xray-family to the resolver. It buys
-	// nothing against a network observer either, since it travels inside TLS
-	// where only its effect on length is visible -- and the EDNS(0) padding
-	// above (RFC 7830, the standard mechanism) already normalises that.
-	// Callers who want it anyway can set it through the headers option.
+	// Resolver-shaped, not browser-shaped. Also deliberately no X-Padding:
+	// xray's own DoH clients send one, but it is an xray convention rather than
+	// a web one -- no RFC defines it and no browser emits it, so it marks the
+	// client as xray-family to the resolver. It buys nothing against a network
+	// observer either, since it travels inside TLS where only its effect on
+	// length is visible, and the EDNS(0) padding above (RFC 7830, the standard
+	// mechanism) already normalises that. Callers who want either can set them
+	// through the headers option.
+	o.applyDoHHeaders(req.Header)
 
 	resp, err := (&http.Client{Transport: tr, Timeout: o.timeout()}).Do(req)
 	if err != nil {
