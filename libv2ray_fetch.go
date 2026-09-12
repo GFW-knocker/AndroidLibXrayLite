@@ -33,6 +33,7 @@ import (
 	"golang.org/x/net/http2"
 	xproxy "golang.org/x/net/proxy"
 
+	xcrypto "github.com/GFW-knocker/Xray-core/common/crypto"
 	xutils "github.com/GFW-knocker/Xray-core/common/utils"
 	xconf "github.com/GFW-knocker/Xray-core/infra/conf"
 	xfragment "github.com/GFW-knocker/Xray-core/transport/internet/finalmask/fragment"
@@ -52,7 +53,7 @@ type FetchResult struct {
 	RespHeaders string // all response headers, as a JSON object
 	RespError   string // empty on success
 	StatusCode  int
-	Proto       string // "HTTP/1.1", "HTTP/2.0"
+	Proto       string // "HTTP/1.1", "HTTP/2.0", "HTTP/3.0"
 	EchAccepted bool   // true only if the server actually accepted ECH
 }
 
@@ -79,6 +80,18 @@ type echOptions struct {
 	DoH string `json:"doh"`
 	// ConfigList is a base64 ECHConfigList, used verbatim when set. Skips DNS.
 	ConfigList string `json:"configList"`
+	// Probe asks the server for its own keys instead of querying DNS, by
+	// offering an undecryptable ECH config and reading the retry_configs it
+	// returns. Accepts every spelling xray's echConfigList takes, so a value
+	// can be copied straight out of an xray config:
+	//
+	//	"probe"                           cloudflare-ech.com:443
+	//	"probe://example.com"             example.com:443
+	//	"probe://example.com@1.2.3.4:443" example.com, dialed at 1.2.3.4:443
+	//
+	// The scheme may be omitted. Takes precedence over Domain+DoH; ConfigList
+	// still wins over both.
+	Probe string `json:"probe"`
 }
 
 // transportOptions is shared by both entry points.
@@ -100,11 +113,19 @@ type transportOptions struct {
 	AllowInsecure bool `json:"allowInsecure"`
 	// ServerName overrides the SNI / certificate name.
 	ServerName string `json:"serverName"`
+	// DisableChromeParrot turns off the Chrome-shaped QUIC handshake on the h3
+	// path. It is on by default; turning it off also makes EchAccepted
+	// reportable, since quic-go's uTLS bridge drops that flag.
+	DisableChromeParrot bool `json:"disableChromeParrot"`
 	// ALPN pins the HTTP version: "auto" (default) offers h2 and http/1.1 and
-	// lets the server pick, "h1" offers only http/1.1, "h2" offers only h2.
+	// lets the server pick, "h1" offers only http/1.1, "h2" offers only h2,
+	// "h3" runs over QUIC (v2, falling back to v1).
+	//
 	// On the uTLS path the ClientHello decides what is offered, so there this
-	// acts as an assertion: a mismatch fails loudly instead of silently
-	// using a version the caller did not ask for. HTTP/3 is not supported.
+	// acts as an assertion: a mismatch fails loudly instead of silently using a
+	// version the caller did not ask for. "h3" is incompatible with fragment,
+	// proxy and fingerprint, all of which are TCP-bound; each is refused rather
+	// than silently ignored.
 	ALPN string `json:"alpn"`
 	// Fingerprint selects a uTLS ClientHello ("chrome", "firefox", ...).
 	// Empty means standard library crypto/tls, which is the recommended
@@ -150,7 +171,7 @@ func (o *transportOptions) timeout() time.Duration {
 }
 
 func (o *transportOptions) echEnabled() bool {
-	return o.Ech != nil && (o.Ech.DoH != "" || o.Ech.ConfigList != "")
+	return o.Ech != nil && (o.Ech.DoH != "" || o.Ech.ConfigList != "" || o.Ech.Probe != "")
 }
 
 // Accepted values of the alpn option, after normalisation.
@@ -158,6 +179,7 @@ const (
 	alpnAuto = "auto"
 	alpnH1   = "h1"
 	alpnH2   = "h2"
+	alpnH3   = "h3"
 )
 
 func (o *transportOptions) alpnMode() (string, error) {
@@ -168,11 +190,10 @@ func (o *transportOptions) alpnMode() (string, error) {
 		return alpnH1, nil
 	case "h2", "http2", "http/2":
 		return alpnH2, nil
-	case "h3", "http3", "http/3":
-		return "", fmt.Errorf("alpn %q is not supported: HTTP/3 runs over QUIC, "+
-			"which this transport does not implement", o.ALPN)
+	case "h3", "http3", "http/3", "quic":
+		return alpnH3, nil
 	default:
-		return "", fmt.Errorf("unknown alpn %q (use \"auto\", \"h1\" or \"h2\")", o.ALPN)
+		return "", fmt.Errorf("unknown alpn %q (use \"auto\", \"h1\", \"h2\" or \"h3\")", o.ALPN)
 	}
 }
 
@@ -184,6 +205,8 @@ func alpnOffer(mode string) []string {
 		return []string{"http/1.1"}
 	case alpnH2:
 		return []string{"h2"}
+	case alpnH3:
+		return []string{"h3"}
 	default:
 		return []string{"h2", "http/1.1"}
 	}
@@ -207,8 +230,34 @@ func (o *transportOptions) validate() error {
 			"reassembles the stream, so fragmentation would be a silent no-op; " +
 			"configure fragmentation in the xray outbound instead")
 	}
-	if _, err := o.alpnMode(); err != nil {
+	mode, err := o.alpnMode()
+	if err != nil {
 		return err
+	}
+	if o.Ech != nil && o.Ech.Probe != "" {
+		if _, _, err := parseECHProbe(o.Ech.Probe); err != nil {
+			return err
+		}
+	}
+	if mode == alpnH3 {
+		// QUIC carries the ClientHello inside an Initial packet, not a TLS
+		// record on a TCP stream, so there is nothing for the fragment writer
+		// to split; and CONNECT/SOCKS5 are TCP, so a proxy cannot carry it.
+		// Both would be silent no-ops, so refuse instead.
+		if o.Fragment != nil {
+			return fmt.Errorf("alpn \"h3\" cannot be combined with fragment: fragmentation " +
+				"splits a TLS record on a TCP stream, and QUIC has no such record layer")
+		}
+		if o.Proxy != "" {
+			return fmt.Errorf("alpn \"h3\" cannot be combined with proxy: QUIC is UDP, and " +
+				"the http/socks5 proxies here carry TCP only")
+		}
+		if o.Fingerprint != "" {
+			return fmt.Errorf("alpn \"h3\" cannot be combined with fingerprint: a uTLS " +
+				"ClientHello is a TLS-over-TCP construct; QUIC uses its own handshake, " +
+				"shaped like Chrome's unless disableChromeParrot is set")
+		}
+		return nil
 	}
 	if o.Fingerprint == "" {
 		return nil
@@ -399,36 +448,61 @@ func (o *transportOptions) echConfigList(ctx context.Context, host string) ([]by
 		return list, nil
 	}
 
-	domain := o.Ech.Domain
-	if domain == "" {
-		domain = host
+	// Both acquisition methods run without ECH of their own, otherwise the
+	// lookup would itself need a lookup. IP is dropped too: it pins the
+	// request's own host, and the ECH source is a different server. Pin that
+	// one by naming a literal address in ech.doh (https://1.1.1.1/dns-query) or
+	// in the probe spec (probe://name@1.2.3.4:443).
+	lookupOpts := *o
+	lookupOpts.Ech = nil
+	lookupOpts.IP = ""
+
+	var (
+		key   string
+		fetch func() ([]byte, uint32, error)
+	)
+
+	if o.Ech.Probe != "" {
+		publicName, hostPort, err := parseECHProbe(o.Ech.Probe)
+		if err != nil {
+			return nil, err
+		}
+		key = "probe|" + publicName + "|" + hostPort + "|" + o.Proxy
+		fetch = func() ([]byte, uint32, error) {
+			return lookupOpts.echProbe(ctx, publicName, hostPort)
+		}
+	} else {
+		domain := o.Ech.Domain
+		if domain == "" {
+			domain = host
+		}
+		key = "doh|" + domain + "|" + o.Ech.DoH + "|" + o.Proxy
+		fetch = func() ([]byte, uint32, error) {
+			msg := new(dns.Msg)
+			msg.SetQuestion(dns.Fqdn(domain), dns.TypeHTTPS)
+
+			reply, _, _, err := lookupOpts.dnsExchange(ctx, o.Ech.DoH, msg)
+			if err != nil {
+				return nil, 0, fmt.Errorf("ECH lookup for %s failed: %w", domain, err)
+			}
+			list, ttl := extractECH(reply, domain)
+			if len(list) == 0 {
+				return nil, 0, fmt.Errorf("no ECH record for %s: an HTTPS/type-65 record "+
+					"with an ech key is required", domain)
+			}
+			return list, ttl, nil
+		}
 	}
-	key := domain + "|" + o.Ech.DoH + "|" + o.Proxy
+
 	if v, ok := echCache.Load(key); ok {
 		if e := v.(echCacheEntry); e.expire.After(time.Now()) {
 			return e.list, nil
 		}
 	}
 
-	// Look up without ECH, otherwise the lookup would itself need a lookup.
-	// IP is dropped too: it pins the request's own host, and the ECH resolver
-	// is a different server. Pin that one by putting a literal address in
-	// ech.doh instead, e.g. https://1.1.1.1/dns-query.
-	lookupOpts := *o
-	lookupOpts.Ech = nil
-	lookupOpts.IP = ""
-
-	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(domain), dns.TypeHTTPS)
-
-	reply, _, _, err := lookupOpts.dnsExchange(ctx, o.Ech.DoH, msg)
+	list, ttl, err := fetch()
 	if err != nil {
-		return nil, fmt.Errorf("ECH lookup for %s failed: %w", domain, err)
-	}
-
-	list, ttl := extractECH(reply, domain)
-	if len(list) == 0 {
-		return nil, fmt.Errorf("no ECH record for %s: an HTTPS/type-65 record with an ech key is required", domain)
+		return nil, err
 	}
 	if ttl == 0 {
 		ttl = 600
@@ -501,6 +575,27 @@ func (s *connState) snapshot() (string, bool) {
 	return s.proto, s.echAccepted
 }
 
+// echAcceptedFrom picks the trustworthy source for the ECH result.
+//
+// A connState recording always wins when present: the dialer that made it read
+// the handshake directly. Response.TLS is the fallback for the standard TLS
+// path, where net/http owns the handshake and nothing was recorded. It must not
+// win over a recording, because on the h3 path quic-go's uTLS bridge rebuilds
+// the state without copying ECHAccepted, so Response.TLS reports false there
+// even when the server accepted ECH.
+func echAcceptedFrom(state *connState, resp *http.Response) bool {
+	state.mu.Lock()
+	recorded, known := state.echAccepted, state.set
+	state.mu.Unlock()
+	if known {
+		return recorded
+	}
+	if resp != nil && resp.TLS != nil {
+		return resp.TLS.ECHAccepted
+	}
+	return false
+}
+
 // handoffDialer hands a pre-dialed connection to the first dial, then dials
 // fresh for anything after it (redirects).
 type handoffDialer struct {
@@ -554,6 +649,9 @@ func (o *transportOptions) roundTripper(ctx context.Context, u *url.URL, state *
 		if mode == alpnH2 {
 			return nil, nil, fmt.Errorf("alpn \"h2\" needs an https url: cleartext h2c is not supported")
 		}
+		if mode == alpnH3 {
+			return nil, nil, fmt.Errorf("alpn \"h3\" needs an https url: QUIC is always encrypted")
+		}
 		return &http.Transport{
 			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 				return o.rawDial(ctx, addr, frag)
@@ -566,6 +664,12 @@ func (o *transportOptions) roundTripper(ctx context.Context, u *url.URL, state *
 	echList, err := o.echConfigList(ctx, u.Hostname())
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if mode == alpnH3 {
+		// validate() has already refused fragment, proxy and fingerprint here,
+		// so the QUIC path never has to reconcile them.
+		return o.h3RoundTripper(u, echList, state)
 	}
 
 	if o.Fingerprint == "" {
@@ -792,10 +896,7 @@ func FetchWeb(optionsJSON string) *FetchResult {
 		return &FetchResult{RespError: err.Error()}
 	}
 
-	_, ech := state.snapshot()
-	if resp.TLS != nil {
-		ech = resp.TLS.ECHAccepted
-	}
+	ech := echAcceptedFrom(state, resp)
 
 	out := &FetchResult{
 		RespHeader:  resp.Header.Get("X-From-Server"),
@@ -943,7 +1044,15 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 
 	// RFC 8484: the ID must be 0 so identical queries stay cacheable.
 	msg.Id = 0
+	// EDNS(0) padding (RFC 7830) varies the query length so the ciphertext size
+	// stops leaking which name was asked for. Same shape xray's own ECH
+	// resolver sends, including the 100-300 byte range.
 	msg.SetEdns0(4096, false)
+	if opt := msg.IsEdns0(); opt != nil {
+		opt.Option = append(opt.Option, &dns.EDNS0_PADDING{
+			Padding: make([]byte, int(xcrypto.RandBetween(100, 300))),
+		})
+	}
 	wire, err := msg.Pack()
 	if err != nil {
 		return nil, "", false, err
@@ -963,7 +1072,7 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 	o.applyHeaders(req.Header, "fetch")
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
-	req.Header.Set("X-Padding", xutils.H2Base62Pad(dohPadLen()))
+	req.Header.Set("X-Padding", xutils.H2Base62Pad(xcrypto.RandBetween(100, 1000)))
 
 	resp, err := (&http.Client{Transport: tr, Timeout: o.timeout()}).Do(req)
 	if err != nil {
@@ -971,10 +1080,7 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 	}
 	defer resp.Body.Close()
 
-	_, ech := state.snapshot()
-	if resp.TLS != nil {
-		ech = resp.TLS.ECHAccepted
-	}
+	ech := echAcceptedFrom(state, resp)
 	proto := resp.Proto
 
 	if resp.StatusCode != http.StatusOK {
@@ -989,10 +1095,4 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 		return nil, proto, ech, fmt.Errorf("malformed doh response: %w", err)
 	}
 	return reply, proto, ech, nil
-}
-
-// dohPadLen varies the padding width so query sizes are not constant. The
-// exact value does not matter, only that it changes.
-func dohPadLen() int {
-	return 100 + int(time.Now().UnixNano()%700)
 }

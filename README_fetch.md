@@ -17,12 +17,16 @@ uTLS fingerprint, browser header profile.
 
 ## 1. Full options reference
 
-Every accepted key in one place. Two pairs are mutually exclusive:
+Every accepted key in one place. Some combinations are refused rather than
+silently ignored:
 
-* `fragment` and `proxy` — a proxy reassembles the stream, so the combination is
-  rejected outright. Fragment on the direct path.
-* `ech.configList` and `ech.domain` + `ech.doh` — a literal config list skips the
-  DNS lookup.
+* `fragment` and `proxy` — a proxy reassembles the stream, so fragmenting would
+  be a no-op. Fragment on the direct path.
+* `alpn: "h3"` with `fragment`, `proxy` or `fingerprint` — all three are
+  TCP-bound and cannot follow QUIC. See [ALPN](#alpn).
+
+And within `ech`, the three acquisition methods are ordered rather than
+combined: `configList` > `probe` > `domain` + `doh`.
 
 ### `FetchWeb`
 
@@ -36,6 +40,7 @@ Every accepted key in one place. Two pairs are mutually exclusive:
   "proxy": "",
   "ip": "",
   "alpn": "auto",
+  "disableChromeParrot": false,
   "allowInsecure": false,
   "serverName": "",
 
@@ -47,6 +52,7 @@ Every accepted key in one place. Two pairs are mutually exclusive:
     "maxSplit": "6-10"
   },
   "ech": {
+    "probe": "",
     "domain": "encryptedsni.com",
     "doh": "https://1.1.1.1/dns-query",
     "configList": ""
@@ -88,6 +94,7 @@ Result:
   "proxy": "",
   "ip": "",
   "alpn": "auto",
+  "disableChromeParrot": false,
   "allowInsecure": false,
   "serverName": "",
 
@@ -99,6 +106,7 @@ Result:
     "maxSplit": "6-10"
   },
   "ech": {
+    "probe": "",
     "domain": "encryptedsni.com",
     "doh": "https://1.1.1.1/dns-query",
     "configList": ""
@@ -111,13 +119,20 @@ Result:
 }
 ```
 
-Here `ech` protects the SNI of the **DoH connection itself**, so it needs the
-DoH host to have a usable ECHConfigList. No major public resolver publishes one
-today (`cloudflare-dns.com`, `dns.google`, `dns.quad9.net`, `dns.adguard-dns.com`
-all lack an `ech=` key), but `ech.domain` can borrow a config from another name
-at the same provider: `"server": "https://cloudflare-dns.com/dns-query"` with
-`"domain": "encryptedsni.com"` yields `EchAccepted: true`, because what has to
-match is the ECH public name, not the request host.
+Here `ech` protects the SNI of the **DoH connection itself**, so it needs a
+usable ECHConfigList for the DoH host. No major public resolver publishes one in
+DNS — `cloudflare-dns.com`, `dns.google`, `dns.quad9.net` and
+`dns.adguard-dns.com` all lack an `ech=` key — so there are two ways around it:
+
+* `"ech": { "probe": "probe" }` asks the server for its keys directly. Simplest,
+  and it needs no resolver at all, which is the point when the resolver is what
+  you are trying to protect.
+* `ech.domain` borrows a config from another name at the same provider:
+  `"server": "https://cloudflare-dns.com/dns-query"` with
+  `"domain": "encryptedsni.com"`.
+
+Both yield `EchAccepted: true`, because what has to match is the ECH public
+name, not the request host.
 
 Result:
 
@@ -147,7 +162,8 @@ Result:
 | `timeout` | int | `8000` | Whole-operation budget, milliseconds. |
 | `allowInsecure` | bool | `false` | Skip certificate verification. |
 | `serverName` | string | URL host | SNI / certificate name override. |
-| `alpn` | string | `"auto"` | HTTP version: `auto`, `h1`, `h2`. See [ALPN](#alpn). |
+| `alpn` | string | `"auto"` | HTTP version: `auto`, `h1`, `h2`, `h3`. See [ALPN](#alpn). |
+| `disableChromeParrot` | bool | `false` | h3 only: stop shaping the QUIC handshake like Chrome. |
 | `fingerprint` | string | `""` (stdlib TLS) | uTLS ClientHello. See [Fingerprints](#fingerprints). |
 | `fragment` | object | none | TLS ClientHello splitting. See [Fragment](#fragment). **Cannot be combined with `proxy`.** |
 | `ech` | object | none | Encrypted Client Hello. See [ECH](#ech). |
@@ -204,15 +220,55 @@ segment, which a reassembling DPI sees whole. Use a non-zero delay.
 
 | key | meaning |
 | --- | --- |
+| `probe` | Ask the server for its own keys, no DNS. See below. |
 | `domain` | Name whose HTTPS (type-65) record carries the ECHConfigList. Defaults to the request host. |
 | `doh` | DoH endpoint used for that lookup. |
-| `configList` | base64 ECHConfigList, used verbatim; skips DNS entirely. |
+| `configList` | base64 ECHConfigList, used verbatim; skips both. |
 
-The lookup runs over **this call's own transport**, so it honours `proxy` and
-`fragment`. xray's `tls.QueryRecord` is deliberately not used: it dials via
-`internet.DialSystem`, which `NewV2RayPoint` points at the `ProtectedDialer`, so
-the DNS query would leave the device on a different path than the request.
-Results are cached until the record's TTL expires.
+Precedence: `configList` (no network at all) > `probe` > `domain` + `doh`.
+
+Whichever is used runs over **this call's own transport**, so it honours
+`proxy`, `ip` and `fragment`. xray's `ApplyECH` / `tls.QueryRecord` are
+deliberately not called: they dial via `internet.DialSystem`, which
+`NewV2RayPoint` points at the `ProtectedDialer`, so the bootstrap would leave the
+device on a different path than the request it is bootstrapping. Results are
+cached until their TTL expires.
+
+#### `probe` -- keys from the server, no resolver
+
+```json
+"ech": { "probe": "probe" }
+```
+
+Offers the server a deliberately undecryptable ECH config. Per
+draft-ietf-tls-esni 6.1.6 it then completes the handshake against the outer
+ClientHello and returns its current keys in `retry_configs` -- which is what we
+keep. No DNS is involved, so a poisoned or blocked resolver cannot stop it.
+
+Every spelling xray's `echConfigList` accepts works, so a value can be copied
+straight out of an xray config; the scheme may also be omitted:
+
+| value | public name | dialled |
+| --- | --- | --- |
+| `probe` | `cloudflare-ech.com` | `cloudflare-ech.com:443` |
+| `probe://example.com` | `example.com` | `example.com:443` |
+| `probe://example.com@1.2.3.4:443` | `example.com` | `1.2.3.4:443` |
+| `example.com@1.2.3.4` | `example.com` | `1.2.3.4:443` |
+
+The result is authenticated: `retry_configs` arrive inside a handshake whose
+certificate is validated against the public name, so this is no weaker than DoH
+and strictly stronger than a plaintext `udp://` lookup. `allowInsecure` drops
+that check for a self-signed server, which also makes the probe spoofable.
+
+Probed configs are cached for 30 minutes -- they carry no DNS TTL, and Cloudflare
+rotates keys roughly hourly with staggered per-datacenter retirement.
+
+A host with no ECH says so plainly:
+
+```
+ECH probe to www.google.com:443 returned no retry_configs: www.google.com is
+probably not ECH-enabled
+```
 
 ### Pinned IP
 
@@ -253,18 +309,50 @@ still applies on a pinned connection.
 "alpn": "auto"
 ```
 
-Pins the HTTP version. HTTP/3 is not supported — it runs over QUIC, and this
-transport is TCP only; `"h3"` is refused with that explanation rather than
-silently downgrading.
+Pins the HTTP version.
 
 | value | offer | behaviour |
 | --- | --- | --- |
 | `auto` (default) | `h2`, `http/1.1` | Server picks. Every major DoH resolver picks h2. |
 | `h1` | `http/1.1` only | h2 cannot be negotiated. |
 | `h2` | `h2` only | Handshake fails if the server will not speak h2. |
+| `h3` | `h3` over QUIC | QUIC v2 first, falling back to v1. See below. |
 
-`http/1.1`, `http1`, `http2`, `http/2` are accepted aliases, case-insensitive.
-`h2` requires an `https` url — cleartext h2c is not supported.
+`http/1.1`, `http1`, `http2`, `http/2`, `http3`, `quic` are accepted aliases,
+case-insensitive. `h2` and `h3` both require an `https` url — cleartext h2c is
+not supported, and QUIC is always encrypted.
+
+#### `h3` -- HTTP/3 over QUIC
+
+Dials QUIC **v2 (RFC 9369) first, falling back to v1 (RFC 9000)**. v2 leads
+deliberately: some networks drop QUIC v1 Initial packets outright, and the drop
+poisons the flow before QUIC's own version negotiation can run. The ladder and
+its per-request stickiness come from xray-core's `transport/internet/quicdial`,
+so this shares the core's ordering rather than reimplementing it.
+
+The handshake is shaped like Chrome's by default (`ChromeParrot` plus a
+zero-length connection ID). `"disableChromeParrot": true` turns that off.
+
+Three options are **refused** with `h3` rather than silently ignored, because
+each is TCP-bound:
+
+| option | why |
+| --- | --- |
+| `fragment` | splits a TLS record on a TCP stream; QUIC has no record layer |
+| `proxy` | CONNECT and SOCKS5 carry TCP only |
+| `fingerprint` | a uTLS ClientHello is TLS-over-TCP; QUIC has its own handshake |
+
+`ip` pinning and `ech` both work normally. One caveat on reporting: quic-go's
+uTLS bridge rebuilds the handshake state without copying `ECHAccepted`, so that
+flag cannot be read back on the parrot path. `EchAccepted` is instead inferred
+from the handshake completing — sound, because both TLS stacks return
+`ECHRejectionError` when a server refuses an offered config. Setting
+`disableChromeParrot` makes the flag directly readable again; the two agree in
+testing.
+
+Because the QUIC path is UDP it also sidesteps the TCP SNI-RST injector: a plain
+`h3` request to a pinned Cloudflare IP succeeds where the same request over
+`auto` is reset.
 
 On the standard TLS path the offer is ours, so `alpn` is enforced exactly. With
 `"h2"` the request is driven through `x/net/http2` directly, because
@@ -483,10 +571,10 @@ fails rather than falling back to a plaintext SNI. A missing record gives
 not from whether a config was found. `EchAccepted == false` with no error means
 the server declined ECH.
 
-**HTTP versions.** HTTP/1.1 and HTTP/2 only; see [ALPN](#alpn) to pin one.
-HTTP/3 is out of scope — it needs QUIC, and neither `fragment` (which splits a
-TLS record on a TCP stream) nor `proxy` (CONNECT and SOCKS5 are TCP) could
-follow it there. On the uTLS path ALPN comes from the fingerprint, so the
+**HTTP versions.** HTTP/1.1, HTTP/2 and HTTP/3; see [ALPN](#alpn) to pin one.
+`h3` runs over QUIC v2 with a v1 fallback, and refuses `fragment`, `proxy` and
+`fingerprint`, none of which can follow it off TCP. On the uTLS path ALPN comes
+from the fingerprint, so the
 handshake happens in the dialer and the negotiated protocol picks between
 `net/http` and `x/net/http2`. Redirects that cross an HTTP-version boundary fail
 with an explicit error rather than corrupt output.
