@@ -379,7 +379,7 @@ CheckVersionX string
 This func will return libv2ray binding version and V2Ray version used.
 */
 func CheckVersionX() string {
-	return fmt.Sprintf("Mahsa-XrayCore v%s-r1", v2core.Version())
+	return fmt.Sprintf("Mahsa-XrayCore v%s", v2core.Version())
 }
 
 func measureInstDelay(ctx context.Context, inst *v2core.Instance, url string) (int64, error) {
