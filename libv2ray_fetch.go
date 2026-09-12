@@ -1072,7 +1072,13 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 	o.applyHeaders(req.Header, "fetch")
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
-	req.Header.Set("X-Padding", xutils.H2Base62Pad(xcrypto.RandBetween(100, 1000)))
+	// Deliberately no X-Padding. xray's own DoH clients send one, but it is an
+	// xray convention rather than a web one: no RFC defines it and no browser
+	// emits it, so it marks the client as xray-family to the resolver. It buys
+	// nothing against a network observer either, since it travels inside TLS
+	// where only its effect on length is visible -- and the EDNS(0) padding
+	// above (RFC 7830, the standard mechanism) already normalises that.
+	// Callers who want it anyway can set it through the headers option.
 
 	resp, err := (&http.Client{Transport: tr, Timeout: o.timeout()}).Do(req)
 	if err != nil {
@@ -1084,6 +1090,12 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 	proto := resp.Proto
 
 	if resp.StatusCode != http.StatusOK {
+		// Resolvers explain themselves in the body; without it a 4xx is
+		// untraceable.
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if msg := strings.TrimSpace(string(detail)); msg != "" {
+			return nil, proto, ech, fmt.Errorf("doh query failed with status %d: %s", resp.StatusCode, msg)
+		}
 		return nil, proto, ech, fmt.Errorf("doh query failed with status %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDNSBytes))

@@ -28,19 +28,6 @@ import (
 // Everything is torn down by the returned cleanup: the UDP socket is ours, not
 // net/http's, so nothing else will close it.
 func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *connState) (http.RoundTripper, func(), error) {
-	addr := canonicalAddr(u)
-	if o.IP != "" {
-		_, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, nil, fmt.Errorf("cannot pin ip for %q: %w", addr, err)
-		}
-		addr = net.JoinHostPort(o.IP, port)
-	}
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("h3: cannot resolve %q: %w", addr, err)
-	}
-
 	// Our own socket, dialed the same way the TCP path dials: no xray dialer, so
 	// it follows OS routing exactly like the rest of FetchWeb.
 	pktConn, err := net.ListenUDP("udp", &net.UDPAddr{})
@@ -68,6 +55,12 @@ func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *con
 	}
 
 	tlsConf := o.tlsConfig(u.Hostname(), echList, []string{"h3"})
+	if o.ServerName == "" {
+		// Leave SNI to http3, which derives it per authority. Pinning the
+		// original host here would carry the wrong name onto a redirect that
+		// crosses hosts.
+		tlsConf.ServerName = ""
+	}
 
 	// Remembers which version last worked for this request, so the fallback is
 	// paid once rather than on every dial a redirect chain makes.
@@ -76,10 +69,26 @@ func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *con
 	rt := &http3.Transport{
 		QUICConfig:      quicConfig,
 		TLSClientConfig: tlsConf,
-		Dial: func(ctx context.Context, _ string, cfg *gotls.Config, qcfg *quic.Config) (*quic.Conn, error) {
+		Dial: func(ctx context.Context, addr string, cfg *gotls.Config, qcfg *quic.Config) (*quic.Conn, error) {
 			if parrot {
 				// ChromeParrot rejects a config carrying server-side fields.
 				cfg.GetCertificate = nil
+			}
+			// addr is the authority http3 wants, which is not necessarily the
+			// request's own host: a redirect across hosts dials a new one. Pin
+			// the IP the same way rawDial does -- replace the host, keep the
+			// port -- so h3 and the TCP paths agree on what "ip" means.
+			target := addr
+			if o.IP != "" {
+				_, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, fmt.Errorf("cannot pin ip for %q: %w", addr, err)
+				}
+				target = net.JoinHostPort(o.IP, port)
+			}
+			udpAddr, err := net.ResolveUDPAddr("udp", target)
+			if err != nil {
+				return nil, fmt.Errorf("h3: cannot resolve %q: %w", target, err)
 			}
 			conn, err := quicdial.Dial(ctx, qcfg, quicdial.H3, pref,
 				func(attempt *quic.Config) (*quic.Conn, error) {
