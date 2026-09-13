@@ -10,8 +10,9 @@ unchanged and unaffected.
 | `ResolveDoH(optionsJSON string) *DNSResult` | DNS query over DoH |
 
 Both take a single JSON options string, so the binding signature stays stable as
-options are added. Both accept the same transport options: proxy, fragment, ECH,
-uTLS fingerprint, browser header profile.
+options are added, and both accept the same transport options: proxy, pinned IP,
+TLS fragmentation, ECH (by DNS or by probing the server), uTLS fingerprint,
+browser header profile, and HTTP/1.1, HTTP/2 or HTTP/3 over QUIC.
 
 ---
 
@@ -417,7 +418,7 @@ HTTP/1.1 only — a coherent pairing for `"userAgent": "okhttp/3.12.1"`.
 | `RespHeaders` | `getRespHeaders()` | All response headers as a JSON object. |
 | `RespError` | `getRespError()` | Empty on success. Check this first. |
 | `StatusCode` | `getStatusCode()` → `long` | HTTP status. |
-| `Proto` | `getProto()` | `"HTTP/1.1"` / `"HTTP/2.0"`. |
+| `Proto` | `getProto()` | `"HTTP/1.1"`, `"HTTP/2.0"` or `"HTTP/3.0"`. |
 | `EchAccepted` | `getEchAccepted()` | `true` only if the server actually accepted ECH. |
 
 `StatusCode > 299` sets `RespError` to `ERR status code: <n>\n<body>` and leaves
@@ -509,6 +510,45 @@ FetchResult r = Libv2ray.fetchWeb(o.toString());
 }
 ```
 
+### ECH without a resolver, over a fragmented direct path
+
+The combination for a censored network: `probe` needs no DNS at all, so a
+poisoned or blocked resolver cannot stop it, and `fragment` keeps the probe's own
+TLS handshake from being reset.
+
+```json
+{
+  "url": "https://example.com/sub",
+  "timeout": 15000,
+  "fragment": {
+    "packets": "tlshello",
+    "lengths": ["1-3", "10-30"],
+    "delays":  ["5-15", "5-15"]
+  },
+  "ech": { "probe": "probe" }
+}
+```
+
+Add `"ip": "188.114.97.6"` when the host's DNS is poisoned too — the `Host`
+header and SNI stay the hostname, only the address dialled changes.
+
+### Fetch over HTTP/3
+
+QUIC is UDP, so this path sidesteps the TCP RST injector entirely — and QUIC v2
+is tried before v1, which matters where v1 Initial packets are dropped.
+
+```json
+{
+  "url": "https://example.com/sub",
+  "timeout": 15000,
+  "alpn": "h3",
+  "ech": { "probe": "probe" }
+}
+```
+
+`fragment`, `proxy` and `fingerprint` are **refused** with `h3` rather than
+silently ignored — all three are TCP-bound. `ip` and `ech` work normally.
+
 ### DNS lookup
 
 ```java
@@ -527,9 +567,8 @@ if (d.getRespError().isEmpty() && d.getRcode().equals("NOERROR")) {
 `fetchWeb` and `resolveDoH` are **synchronous**: each one performs the whole
 exchange — DNS, TCP, TLS handshake, HTTP round trip, body read — before it
 returns, holding the calling thread for up to `timeout` milliseconds. Use a
-`Thread`, an `ExecutorService`, or a coroutine on `Dispatchers.IO`.
-invoke static methods from a background thread.Being inside a `Service` does not help,
-since service callbacks also run on the main thread.
+`Thread`, an `ExecutorService`, or a coroutine on `Dispatchers.IO`. Being inside
+a `Service` does not help, since service callbacks also run on the main thread.
 
 ---
 
@@ -558,8 +597,9 @@ fmt.Println(d.Rcode, d.Answers)
 
 The package as a whole is Android-only — `libv2ray_support.go` uses
 `golang.org/x/sys/unix`, so it will not build on Windows or macOS. To exercise
-these two functions on a desktop, copy `libv2ray_fetch.go` into a scratch module
-on its own; it has no Android dependencies.
+these two functions on a desktop, copy `libv2ray_fetch.go`,
+`libv2ray_fetch_probe.go` and `libv2ray_fetch_h3.go` into a scratch module of
+their own; none of the three has an Android dependency.
 
 ---
 
@@ -580,17 +620,19 @@ fragmentation in the xray outbound.
 fails rather than falling back to a plaintext SNI. A missing record gives
 `no ECH record for <domain>` instead of xray's `tls: malformed ECHConfigList`.
 
-**`EchAccepted` is the ground truth.** It comes from the TLS connection state,
-not from whether a config was found. `EchAccepted == false` with no error means
-the server declined ECH.
+**`EchAccepted` is the ground truth, not "a config was found".** On the TCP
+paths it is read from the TLS connection state, so `false` with no error means
+the server declined ECH. On `h3` it is inferred from the handshake completing,
+because quic-go's uTLS bridge drops the flag — sound, since both TLS stacks
+return `ECHRejectionError` when a server refuses a config. See [ALPN](#alpn).
 
 **HTTP versions.** HTTP/1.1, HTTP/2 and HTTP/3; see [ALPN](#alpn) to pin one.
 `h3` runs over QUIC v2 with a v1 fallback, and refuses `fragment`, `proxy` and
 `fingerprint`, none of which can follow it off TCP. On the uTLS path ALPN comes
-from the fingerprint, so the
-handshake happens in the dialer and the negotiated protocol picks between
-`net/http` and `x/net/http2`. Redirects that cross an HTTP-version boundary fail
-with an explicit error rather than corrupt output.
+from the fingerprint rather than from us, so the handshake happens in the dialer
+and the negotiated protocol picks between `net/http` and `x/net/http2`. Redirects
+that cross an HTTP-version boundary fail with an explicit error rather than
+corrupt output.
 
 **Body cap** 32 MiB; DoH response cap 64 KiB.
 
