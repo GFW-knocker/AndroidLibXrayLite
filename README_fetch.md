@@ -48,7 +48,7 @@ the two below.
   "alpn": "auto",
   "disableChromeParrot": false,
   "allowInsecure": false,
-  "serverName": "",
+  "serverName": "cdn.example.com",
 
   "fingerprint": "chrome",
   "fragment": {
@@ -71,26 +71,20 @@ the two below.
 }
 ```
 
-Three separate things come off the hostname in `"url"` — `example.com` in the
-block above — and each is controlled differently:
+The URL's hostname supplies three things, each overridden separately:
 
-| what | default | how to change it |
-| --- | --- | --- |
-| address dialled | resolved from the hostname | `"ip"` |
-| SNI **and** certificate name | the hostname | `"serverName"` |
-| `Host` header | the hostname | not overridable |
+| taken from the URL host | override with |
+| --- | --- |
+| address dialled | `"ip"` |
+| SNI **and** certificate name | `"serverName"` |
+| `Host` header | nothing — `"headers": {"Host": ...}` is ignored |
 
-So the block above connects to `188.114.97.6` while still sending
-`Host: example.com`, an SNI of `example.com`, and verifying the certificate
-against `example.com`. That is how you reach a host whose DNS is poisoned; leave
-`"ip"` empty for normal resolution.
+So the block above dials `188.114.97.6`, sends SNI `cdn.example.com` and checks
+the certificate against it, and still sends `Host: example.com`. Leave `"ip"`
+and `"serverName"` empty to follow the URL for all three.
 
-`"serverName"` moves the SNI and the certificate name together, and leaves the
-`Host` header behind — that split is exactly what domain fronting needs. The
-`Host` header itself has no override: `"headers": {"Host": "..."}` is silently
-ignored, because net/http takes `Host` from the URL and skips any header of that
-name. Measured: with such a header set, the server still saw
-`Host: httpbin.org`.
+`"ip"` is how you reach a host whose DNS is poisoned. Splitting SNI from `Host`
+with `"serverName"` is domain fronting, which most CDNs now reject.
 
 To go through xray instead, set `"proxy": "http://127.0.0.1:10809"` and remove
 `fragment`. Nothing else changes.
@@ -133,7 +127,7 @@ Result:
     "maxSplit": "6-10"
   },
   "ech": {
-    "probe": "probe",
+    "probe": "chatgpt.com@104.18.32.47",
     "domain": "encryptedsni.com",
     "doh": "https://1.1.1.1/dns-query",
     "configList": ""
@@ -155,7 +149,8 @@ ECHConfigList for the DoH host. No major public resolver publishes one in
 DNS — `cloudflare-dns.com`, `dns.google`, `dns.quad9.net` and
 `dns.adguard-dns.com` all lack an `ech=` key — so there are two ways around it:
 
-* `"ech": { "probe": "probe" }` asks the server for its keys directly. Simplest,
+* `"ech": { "probe": "chatgpt.com@104.18.32.47" }` asks the server for its keys
+  directly. Simplest,
   and it needs no resolver at all, which is the point when the resolver is what
   you are trying to protect.
 * `ech.domain` borrows a config from another name at the same provider:
@@ -196,7 +191,7 @@ QUIC handshake is Chrome-shaped unless `disableChromeParrot` says otherwise.
   "alpn": "h3",
   "disableChromeParrot": false,
   "allowInsecure": false,
-  "serverName": "",
+  "serverName": "cdn.example.com",
 
   "ech": {
     "probe": "chatgpt.com@104.18.32.47",
@@ -340,7 +335,7 @@ Three things follow from that cache, all matching what the core does:
 #### `probe` -- keys from the server, no resolver
 
 ```json
-"ech": { "probe": "probe" }
+"ech": { "probe": "chatgpt.com@104.18.32.47" }
 ```
 
 Offers the server a deliberately undecryptable ECH config. Per
@@ -614,7 +609,7 @@ TLS handshake from being reset.
     "lengths": ["1-3", "10-30"],
     "delays":  ["5-15", "5-15"]
   },
-  "ech": { "probe": "probe" }
+  "ech": { "probe": "chatgpt.com@104.18.32.47" }
 }
 ```
 
@@ -631,7 +626,7 @@ is tried before v1, which matters where v1 Initial packets are dropped.
   "url": "https://example.com/sub",
   "timeout": 15000,
   "alpn": "h3",
-  "ech": { "probe": "probe" }
+  "ech": { "probe": "chatgpt.com@104.18.32.47" }
 }
 ```
 
