@@ -150,9 +150,8 @@ DNS — `cloudflare-dns.com`, `dns.google`, `dns.quad9.net` and
 `dns.adguard-dns.com` all lack an `ech=` key — so there are two ways around it:
 
 * `"ech": { "probe": "chatgpt.com@104.18.32.47" }` asks the server for its keys
-  directly. Simplest,
-  and it needs no resolver at all, which is the point when the resolver is what
-  you are trying to protect.
+  directly. Simplest, and it needs no resolver at all — which is the point when
+  the resolver is what you are trying to protect.
 * `ech.domain` borrows a config from another name at the same provider:
   `"server": "https://cloudflare-dns.com/dns-query"` with
   `"domain": "encryptedsni.com"`.
@@ -353,6 +352,10 @@ straight out of an xray config; the scheme may also be omitted:
 | `probe://chatgpt.com@104.18.32.47:443` | `chatgpt.com` | `104.18.32.47:443` |
 | `chatgpt.com@104.18.32.47` | `chatgpt.com` | `104.18.32.47:443` |
 
+The `@address` half has the same caveat as [`ip`](#pinned-ip): a sniffing proxy
+overrides it with the public name, so it only decides where you land on a direct
+path.
+
 The result is authenticated: `retry_configs` arrive inside a handshake whose
 certificate is validated against the public name, so this is no weaker than DoH
 and strictly stronger than a plaintext `udp://` lookup. `allowInsecure` drops
@@ -382,8 +385,11 @@ edge address rather than rewriting it.
 * The port still comes from the URL, so put a non-standard one there:
   `https://cloudflare-dns.com:2053/dns-query`.
 * IPv4 and IPv6 literals both work. A hostname is rejected up front.
-* Applies through `proxy` too: the CONNECT / SOCKS request names the pinned
-  address, so the proxy dials it.
+* Through `proxy` it is only a hint. The pinned address does go into the
+  CONNECT / SOCKS target, but a proxy with TLS sniffing (xray's
+  `destOverride: ["tls"]`, on by default in most GUI clients) reads the SNI from
+  the ClientHello and re-resolves by domain, discarding the IP. On the direct
+  path the pin always holds.
 * `fragment` and `ech` apply exactly as they do without a pin.
 * **Not inherited by the ECH lookup.** `ip` pins this request's host, and the
   ECH resolver is a different server. Pin that one by putting a literal address
