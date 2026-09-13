@@ -261,3 +261,38 @@ func (o *transportOptions) echProbe(ctx context.Context, publicName, hostPort st
 	}
 	return retryConfigs, echProbeTTL, nil
 }
+
+// echRejected reports whether err is the server refusing the ECH config we
+// offered. Callers must only consult it when a config was actually offered,
+// since the second shape below is not ECH-specific on its own.
+//
+// Two shapes have to be recognised:
+//
+//   - ECHRejectionError, the clean signal. crypto/tls produces it, because it
+//     validates the rejection certificate against the outer public name as the
+//     spec requires, and so gets far enough to build the error.
+//   - A certificate error. uTLS validates that certificate against the inner
+//     server name instead, so it fails there before it can construct an
+//     ECHRejectionError, and the rejection arrives disguised as a name
+//     mismatch. Our uTLS and h3 paths both hit this.
+//
+// net/http and http3 wrap rather than replace, so errors.As finds either
+// through the *url.Error a request returns.
+//
+// Treating every certificate error on an ECH-enabled request as a rejection is
+// deliberately slightly broad: the cost of a false positive is one extra config
+// fetch, while a miss leaves a stale config failing every handshake until its
+// TTL expires -- up to 30 minutes for a probed config.
+func echRejected(err error) bool {
+	var goRejection *gotls.ECHRejectionError
+	if goerrors.As(err, &goRejection) {
+		return true
+	}
+	var uRejection *utls.ECHRejectionError
+	if goerrors.As(err, &uRejection) {
+		return true
+	}
+	var goCertErr *gotls.CertificateVerificationError
+	var uCertErr *utls.CertificateVerificationError
+	return goerrors.As(err, &goCertErr) || goerrors.As(err, &uCertErr)
+}

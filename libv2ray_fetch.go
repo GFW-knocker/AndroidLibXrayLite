@@ -20,6 +20,7 @@ import (
 	gotls "crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -426,26 +427,106 @@ func (o *transportOptions) fragmentConfig() (*xfragment.Config, error) {
 
 type echCacheEntry struct {
 	list   []byte
+	err    error // set on a negative entry; list is nil
 	expire time.Time
 }
 
-var echCache sync.Map // string -> echCacheEntry
+var (
+	echCache   sync.Map // string -> echCacheEntry
+	echFetchMu sync.Map // string -> *sync.Mutex, one acquisition per key at a time
+)
+
+// echNegativeTTL is how long a failed acquisition is remembered, matching
+// xray's own value. Long enough that a burst of requests does not each pay a
+// 12-second probe timeout, short enough that a resolver coming back is noticed.
+const echNegativeTTL = 30 * time.Second
+
+// echDefaultTTL is used when a DNS answer carries no usable TTL.
+const echDefaultTTL uint32 = 600
+
+func echCacheLoad(key string) (list []byte, err error, ok bool) {
+	v, found := echCache.Load(key)
+	if !found {
+		return nil, nil, false
+	}
+	e := v.(echCacheEntry)
+	if !e.expire.After(time.Now()) {
+		return nil, nil, false
+	}
+	return e.list, e.err, true
+}
+
+// echInvalidate drops a cached config so the next request acquires a fresh one.
+//
+// This is what makes a key rotation self-healing. Cloudflare rotates roughly
+// hourly and retires old keys per datacenter, so a cached config can start
+// being refused well before its TTL runs out; without this, every handshake
+// would keep failing for the rest of that TTL -- up to 30 minutes for a probed
+// config. A pinned base64 config has no cache entry and an empty key, so it is
+// correctly a no-op there: it cannot refresh itself.
+func echInvalidate(key string) {
+	if key != "" {
+		echCache.Delete(key)
+	}
+}
+
+// echAcquire returns a cached config, or runs fetch once on behalf of every
+// caller waiting on the same key.
+func echAcquire(key string, fetch func() ([]byte, uint32, error)) ([]byte, error) {
+	if list, err, ok := echCacheLoad(key); ok {
+		return list, err
+	}
+
+	muv, _ := echFetchMu.LoadOrStore(key, &sync.Mutex{})
+	mu := muv.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Whoever lost the race finds what the winner stored, positive or negative,
+	// instead of repeating a lookup that just happened.
+	if list, err, ok := echCacheLoad(key); ok {
+		return list, err
+	}
+
+	list, ttl, err := fetch()
+	if err != nil {
+		// A caller's own deadline says nothing about the endpoint, and caching
+		// it would let a short-timeout request poison a patient one for the
+		// next 30 seconds.
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			echCache.Store(key, echCacheEntry{err: err, expire: time.Now().Add(echNegativeTTL)})
+		}
+		return nil, err
+	}
+	if ttl == 0 {
+		ttl = echDefaultTTL
+	}
+	echCache.Store(key, echCacheEntry{list: list, expire: time.Now().Add(time.Duration(ttl) * time.Second)})
+	return list, nil
+}
 
 // echConfigList resolves the ECHConfigList for the request. The lookup runs
 // over this call's own transport, so it honours Proxy and Fragment. xray's
 // tls.QueryRecord deliberately is not used: it dials via internet.DialSystem,
 // which NewV2RayPoint points at the ProtectedDialer, so the DNS query would
 // leave the device on a different path than the request itself.
-func (o *transportOptions) echConfigList(ctx context.Context, host string) ([]byte, error) {
+// The returned key identifies the cache entry the config came from, so a later
+// rejection can drop it. It is empty when there is nothing to drop.
+func (o *transportOptions) echConfigList(ctx context.Context, host string) ([]byte, string, error) {
 	if !o.echEnabled() {
-		return nil, nil
+		return nil, "", nil
 	}
 	if o.Ech.ConfigList != "" {
 		list, err := base64.StdEncoding.DecodeString(o.Ech.ConfigList)
 		if err != nil {
-			return nil, fmt.Errorf("invalid ech.configList: %w", err)
+			return nil, "", fmt.Errorf("invalid ech.configList: %w", err)
 		}
-		return list, nil
+		// Checked here so a malformed pin fails with a clear message rather
+		// than an opaque TLS error on every later handshake.
+		if !looksLikeECHConfigList(list) {
+			return nil, "", fmt.Errorf("invalid ech.configList: not a well-formed ECHConfigList")
+		}
+		return list, "", nil
 	}
 
 	// Both acquisition methods run without ECH of their own, otherwise the
@@ -465,7 +546,7 @@ func (o *transportOptions) echConfigList(ctx context.Context, host string) ([]by
 	if o.Ech.Probe != "" {
 		publicName, hostPort, err := parseECHProbe(o.Ech.Probe)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		key = "probe|" + publicName + "|" + hostPort + "|" + o.Proxy
 		fetch = func() ([]byte, uint32, error) {
@@ -494,21 +575,11 @@ func (o *transportOptions) echConfigList(ctx context.Context, host string) ([]by
 		}
 	}
 
-	if v, ok := echCache.Load(key); ok {
-		if e := v.(echCacheEntry); e.expire.After(time.Now()) {
-			return e.list, nil
-		}
-	}
-
-	list, ttl, err := fetch()
+	list, err := echAcquire(key, fetch)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if ttl == 0 {
-		ttl = 600
-	}
-	echCache.Store(key, echCacheEntry{list: list, expire: time.Now().Add(time.Duration(ttl) * time.Second)})
-	return list, nil
+	return list, key, nil
 }
 
 func extractECH(reply *dns.Msg, domain string) ([]byte, uint32) {
@@ -556,6 +627,11 @@ type connState struct {
 	proto       string
 	echAccepted bool
 	set         bool
+
+	// echKey identifies the cache entry the ECH config came from, so a
+	// rejection can drop it. Written once while the transport is being built,
+	// before any dial runs, and only read afterwards.
+	echKey string
 }
 
 func (s *connState) record(proto string, ech bool) error {
@@ -661,10 +737,11 @@ func (o *transportOptions) roundTripper(ctx context.Context, u *url.URL, state *
 		}, noop, nil
 	}
 
-	echList, err := o.echConfigList(ctx, u.Hostname())
+	echList, echKey, err := o.echConfigList(ctx, u.Hostname())
 	if err != nil {
 		return nil, nil, err
 	}
+	state.echKey = echKey
 
 	if mode == alpnH3 {
 		// validate() has already refused fragment, proxy and fingerprint here,
@@ -928,6 +1005,12 @@ func FetchWeb(optionsJSON string) *FetchResult {
 
 	resp, err := (&http.Client{Transport: tr, Timeout: opts.timeout()}).Do(req)
 	if err != nil {
+		if opts.echEnabled() && echRejected(err) {
+			echInvalidate(state.echKey)
+			return &FetchResult{RespError: "ECH rejected: the server refused the config we " +
+				"offered, which is how a rotated key shows up. The cached entry has been " +
+				"dropped, so a retry will fetch a fresh one. " + err.Error()}
+		}
 		return &FetchResult{RespError: err.Error()}
 	}
 	defer resp.Body.Close()
@@ -1122,6 +1205,9 @@ func (o *transportOptions) dnsExchange(ctx context.Context, server string, msg *
 
 	resp, err := (&http.Client{Transport: tr, Timeout: o.timeout()}).Do(req)
 	if err != nil {
+		if o.echEnabled() && echRejected(err) {
+			echInvalidate(state.echKey)
+		}
 		return nil, "", false, err
 	}
 	defer resp.Body.Close()

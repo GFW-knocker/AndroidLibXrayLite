@@ -232,7 +232,20 @@ Whichever is used runs over **this call's own transport**, so it honours
 deliberately not called: they dial via `internet.DialSystem`, which
 `NewV2RayPoint` points at the `ProtectedDialer`, so the bootstrap would leave the
 device on a different path than the request it is bootstrapping. Results are
-cached until their TTL expires.
+cached until their TTL expires: the DNS TTL for a lookup, 30 minutes for a probe
+(a probed config carries none, and Cloudflare rotates roughly hourly).
+
+Three things follow from that cache, all matching what the core does:
+
+* A failed acquisition is remembered for 30 seconds, so a burst of requests does
+  not each pay a 12-second probe timeout against a dead endpoint. A failure
+  caused by the caller's own deadline is not cached, so a short-timeout request
+  cannot poison a patient one.
+* Concurrent requests needing the same config collapse into one acquisition.
+* **A config the server refuses is dropped immediately.** This is what makes a
+  key rotation self-healing — without it a stale config would keep failing every
+  handshake until its TTL ran out. A pinned `configList` has no cache entry and
+  so cannot refresh itself, which the error message says.
 
 #### `probe` -- keys from the server, no resolver
 
