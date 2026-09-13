@@ -26,8 +26,13 @@ silently ignored:
 * `alpn: "h3"` with `fragment`, `proxy` or `fingerprint` — all three are
   TCP-bound and cannot follow QUIC. See [ALPN](#alpn).
 
-And within `ech`, the three acquisition methods are ordered rather than
-combined: `configList` > `probe` > `domain` + `doh`.
+Within `ech` the three acquisition methods are ordered rather than combined:
+`configList` > `probe` > `domain` + `doh`. All three are shown filled in below so
+each shape is visible; in a real config fill the one you want and leave the rest
+empty.
+
+Because `h3` excludes three of these keys, it gets its own complete block after
+the two below.
 
 ### `FetchWeb`
 
@@ -39,7 +44,7 @@ combined: `configList` > `probe` > `domain` + `doh`.
 
   "timeout": 15000,
   "proxy": "",
-  "ip": "",
+  "ip": "188.114.97.6",
   "alpn": "auto",
   "disableChromeParrot": false,
   "allowInsecure": false,
@@ -53,7 +58,7 @@ combined: `configList` > `probe` > `domain` + `doh`.
     "maxSplit": "6-10"
   },
   "ech": {
-    "probe": "",
+    "probe": "probe",
     "domain": "encryptedsni.com",
     "doh": "https://1.1.1.1/dns-query",
     "configList": ""
@@ -65,6 +70,9 @@ combined: `configList` > `probe` > `domain` + `doh`.
   "headers": { "X-Request-Id": "abc123" }
 }
 ```
+
+`"ip"` dials that address while `Host` and SNI keep the URL's hostname, which is
+how you reach a host whose DNS is poisoned. Leave it `""` for normal resolution.
 
 To go through xray instead, set `"proxy": "http://127.0.0.1:10809"` and remove
 `fragment`. Nothing else changes.
@@ -89,11 +97,11 @@ Result:
 {
   "domain": "www.google.com",
   "type": "A",
-  "server": "https://1.1.1.1/dns-query",
+  "server": "https://cloudflare-dns.com/dns-query",
 
   "timeout": 20000,
   "proxy": "",
-  "ip": "",
+  "ip": "188.114.97.6",
   "alpn": "auto",
   "disableChromeParrot": false,
   "allowInsecure": false,
@@ -107,7 +115,7 @@ Result:
     "maxSplit": "6-10"
   },
   "ech": {
-    "probe": "",
+    "probe": "probe",
     "domain": "encryptedsni.com",
     "doh": "https://1.1.1.1/dns-query",
     "configList": ""
@@ -120,8 +128,12 @@ Result:
 }
 ```
 
-Here `ech` protects the SNI of the **DoH connection itself**, so it needs a
-usable ECHConfigList for the DoH host. No major public resolver publishes one in
+Here `ip` pins the DoH server itself — useful when the resolver's own hostname
+is what the network poisons — and `alpn: "h3"` works here too, which gets the
+query off TCP entirely.
+
+`ech` protects the SNI of the **DoH connection itself**, so it needs a usable
+ECHConfigList for the DoH host. No major public resolver publishes one in
 DNS — `cloudflare-dns.com`, `dns.google`, `dns.quad9.net` and
 `dns.adguard-dns.com` all lack an `ech=` key — so there are two ways around it:
 
@@ -148,6 +160,43 @@ Result:
   "RespError":   ""
 }
 ```
+
+### `FetchWeb` over HTTP/3
+
+`h3` runs over QUIC, so `fragment`, `proxy` and `fingerprint` cannot come with
+it — each is refused rather than ignored. Every other key still applies, and the
+QUIC handshake is Chrome-shaped unless `disableChromeParrot` says otherwise.
+
+```json
+{
+  "url": "https://example.com/api/sub",
+  "method": "GET",
+  "data": "",
+
+  "timeout": 15000,
+  "ip": "188.114.97.6",
+  "alpn": "h3",
+  "disableChromeParrot": false,
+  "allowInsecure": false,
+  "serverName": "",
+
+  "ech": {
+    "probe": "probe",
+    "domain": "",
+    "doh": "",
+    "configList": ""
+  },
+
+  "browser": "chrome",
+  "variant": "nav",
+  "userAgent": "",
+  "headers": { "X-Request-Id": "abc123" }
+}
+```
+
+QUIC v2 is dialled first with a v1 fallback, and being UDP it sidesteps the TCP
+RST injector — which is why it needs no `fragment` to survive a path that resets
+TLS handshakes. `Proto` comes back as `"HTTP/3.0"`.
 
 ---
 
