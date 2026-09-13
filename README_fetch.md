@@ -58,7 +58,7 @@ the two below.
     "maxSplit": "6-10"
   },
   "ech": {
-    "probe": "example.com@1.2.3.4",
+    "probe": "chatgpt.com@104.18.32.47",
     "domain": "encryptedsni.com",
     "doh": "https://1.1.1.1/dns-query",
     "configList": ""
@@ -71,15 +71,26 @@ the two below.
 }
 ```
 
-`"ip"` changes only the address dialled. There is no separate host or SNI key:
-both are taken from the hostname inside `"url"`, so with the block above the
-connection goes to `188.114.97.6` while the request still sends
-`Host: example.com` and an SNI of `example.com`, and the certificate is checked
-against `example.com`. That is how you reach a host whose DNS is poisoned. Leave
+Three separate things come off the hostname in `"url"` — `example.com` in the
+block above — and each is controlled differently:
+
+| what | default | how to change it |
+| --- | --- | --- |
+| address dialled | resolved from the hostname | `"ip"` |
+| SNI **and** certificate name | the hostname | `"serverName"` |
+| `Host` header | the hostname | not overridable |
+
+So the block above connects to `188.114.97.6` while still sending
+`Host: example.com`, an SNI of `example.com`, and verifying the certificate
+against `example.com`. That is how you reach a host whose DNS is poisoned; leave
 `"ip"` empty for normal resolution.
 
-`"serverName"` overrides the SNI and the name the certificate is verified
-against, leaving the `Host` header alone; empty means both follow `"url"`.
+`"serverName"` moves the SNI and the certificate name together, and leaves the
+`Host` header behind — that split is exactly what domain fronting needs. The
+`Host` header itself has no override: `"headers": {"Host": "..."}` is silently
+ignored, because net/http takes `Host` from the URL and skips any header of that
+name. Measured: with such a header set, the server still saw
+`Host: httpbin.org`.
 
 To go through xray instead, set `"proxy": "http://127.0.0.1:10809"` and remove
 `fragment`. Nothing else changes.
@@ -188,7 +199,7 @@ QUIC handshake is Chrome-shaped unless `disableChromeParrot` says otherwise.
   "serverName": "",
 
   "ech": {
-    "probe": "example.com@1.2.3.4",
+    "probe": "chatgpt.com@104.18.32.47",
     "domain": "",
     "doh": "",
     "configList": ""
@@ -281,7 +292,7 @@ Precedence when more than one is filled: `configList` > `probe` > `domain` + `do
 or block, since no resolver is contacted.
 
 ```json
-"ech": { "probe": "example.com@1.2.3.4", "domain": "", "doh": "", "configList": "" }
+"ech": { "probe": "chatgpt.com@104.18.32.47", "domain": "", "doh": "", "configList": "" }
 ```
 
 **2. `domain` + `doh` — read the HTTPS (type-65) record.** Both keys belong to
@@ -344,8 +355,8 @@ straight out of an xray config; the scheme may also be omitted:
 | --- | --- | --- |
 | `probe` | `cloudflare-ech.com` | `cloudflare-ech.com:443` |
 | `probe://example.com` | `example.com` | `example.com:443` |
-| `probe://example.com@1.2.3.4:443` | `example.com` | `1.2.3.4:443` |
-| `example.com@1.2.3.4` | `example.com` | `1.2.3.4:443` |
+| `probe://chatgpt.com@104.18.32.47:443` | `chatgpt.com` | `104.18.32.47:443` |
+| `chatgpt.com@104.18.32.47` | `chatgpt.com` | `104.18.32.47:443` |
 
 The result is authenticated: `retry_configs` arrive inside a handshake whose
 certificate is validated against the public name, so this is no weaker than DoH
