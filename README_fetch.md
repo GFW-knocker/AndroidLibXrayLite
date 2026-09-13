@@ -58,7 +58,7 @@ the two below.
     "maxSplit": "6-10"
   },
   "ech": {
-    "probe": "probe",
+    "probe": "example.com@1.2.3.4",
     "domain": "encryptedsni.com",
     "doh": "https://1.1.1.1/dns-query",
     "configList": ""
@@ -71,8 +71,15 @@ the two below.
 }
 ```
 
-`"ip"` dials that address while `Host` and SNI keep the URL's hostname, which is
-how you reach a host whose DNS is poisoned. Leave it `""` for normal resolution.
+`"ip"` changes only the address dialled. There is no separate host or SNI key:
+both are taken from the hostname inside `"url"`, so with the block above the
+connection goes to `188.114.97.6` while the request still sends
+`Host: example.com` and an SNI of `example.com`, and the certificate is checked
+against `example.com`. That is how you reach a host whose DNS is poisoned. Leave
+`"ip"` empty for normal resolution.
+
+`"serverName"` overrides the SNI and the name the certificate is verified
+against, leaving the `Host` header alone; empty means both follow `"url"`.
 
 To go through xray instead, set `"proxy": "http://127.0.0.1:10809"` and remove
 `fragment`. Nothing else changes.
@@ -181,7 +188,7 @@ QUIC handshake is Chrome-shaped unless `disableChromeParrot` says otherwise.
   "serverName": "",
 
   "ech": {
-    "probe": "probe",
+    "probe": "example.com@1.2.3.4",
     "domain": "",
     "doh": "",
     "configList": ""
@@ -264,18 +271,40 @@ segment, which a reassembling DPI sees whole. Use a non-zero delay.
 
 ### ECH
 
+The ECHConfigList can be obtained three ways. They are **alternatives, not
+combinable** — exactly one runs, chosen by precedence, and the keys belonging to
+the others are ignored. Pick one and leave the rest empty.
+
+Precedence when more than one is filled: `configList` > `probe` > `domain` + `doh`.
+
+**1. `probe` — ask the server, no DNS involved.** Preferred: nothing to poison
+or block, since no resolver is contacted.
+
 ```json
-"ech": { "domain": "encryptedsni.com", "doh": "https://1.1.1.1/dns-query" }
+"ech": { "probe": "example.com@1.2.3.4", "domain": "", "doh": "", "configList": "" }
 ```
 
-| key | meaning |
-| --- | --- |
-| `probe` | Ask the server for its own keys, no DNS. See below. |
-| `domain` | Name whose HTTPS (type-65) record carries the ECHConfigList. Defaults to the request host. |
-| `doh` | DoH endpoint used for that lookup. |
-| `configList` | base64 ECHConfigList, used verbatim; skips both. |
+**2. `domain` + `doh` — read the HTTPS (type-65) record.** Both keys belong to
+this one method; `doh` alone is not enough and `domain` defaults to the request
+host when empty.
 
-Precedence: `configList` (no network at all) > `probe` > `domain` + `doh`.
+```json
+"ech": { "probe": "", "domain": "encryptedsni.com", "doh": "https://1.1.1.1/dns-query", "configList": "" }
+```
+
+**3. `configList` — a base64 ECHConfigList, used verbatim.** No network at all,
+but it cannot refresh itself when the server rotates keys.
+
+```json
+"ech": { "probe": "", "domain": "", "doh": "", "configList": "AEX+DQBB..." }
+```
+
+| key | belongs to | meaning |
+| --- | --- | --- |
+| `probe` | method 1 | Probe spec; the accepted spellings are in the subsection below. |
+| `domain` | method 2 | Name whose HTTPS record carries the list. Defaults to the request host. |
+| `doh` | method 2 | DoH endpoint used for that lookup. |
+| `configList` | method 3 | base64 ECHConfigList, used verbatim. |
 
 Whichever is used runs over **this call's own transport**, so it honours
 `proxy`, `ip` and `fragment`. xray's `ApplyECH` / `tls.QueryRecord` are
