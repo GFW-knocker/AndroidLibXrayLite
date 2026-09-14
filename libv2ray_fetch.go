@@ -120,7 +120,7 @@ type transportOptions struct {
 	DisableChromeParrot bool `json:"disableChromeParrot"`
 	// ALPN pins the HTTP version: "auto" (default) offers h2 and http/1.1 and
 	// lets the server pick, "h1" offers only http/1.1, "h2" offers only h2,
-	// "h3" runs over QUIC (v2, falling back to v1).
+	// "h3" runs over QUIC (v2 then v1 by default; see QUICVersion).
 	//
 	// On the uTLS path the ClientHello decides what is offered, so there this
 	// acts as an assertion: a mismatch fails loudly instead of silently using a
@@ -128,6 +128,35 @@ type transportOptions struct {
 	// proxy and fingerprint, all of which are TCP-bound; each is refused rather
 	// than silently ignored.
 	ALPN string `json:"alpn"`
+	// QUICVersion pins the QUIC version on the h3 path: "auto" (default) dials
+	// v2 and falls back to v1, "v1" and "v2" dial only that one.
+	//
+	// Worth pinning in two opposite cases. A peer that ignores v2 instead of
+	// answering Version Negotiation -- Cloudflare's edge does exactly this --
+	// makes "auto" burn a whole handshake timeout before it reaches v1, so
+	// "v1" is much faster there. A network that drops v1 Initials makes "v2"
+	// the only version that gets through at all, where the peer supports it.
+	// Combining "v1" with WNoise covers the case where neither is true on its
+	// own: the noise clears the path, then v1 is dialed directly.
+	QUICVersion string `json:"quicVersion"`
+	// WNoise sends junk UDP datagrams on the h3 socket before the handshake,
+	// to get an on-path filter to judge the flow on something other than a
+	// QUIC v1 Initial. "none" (default) sends nothing; "quic" sends a QUIC v2
+	// header, "quicv1" a v1 one, "random" 18 random bytes; anything else is
+	// read as a hex header to send verbatim ("d06b3343cf...", up to 50 bytes).
+	//
+	// Same vocabulary as an xray WireGuard outbound's wnoise, so values carry
+	// over unchanged. Needs alpn "h3"; the other paths are TCP.
+	WNoise string `json:"wnoise"`
+	// WNoiseCount is how many noise datagrams to send: "5" or a "3-8" range.
+	// Default 5, capped at 50.
+	WNoiseCount string `json:"wnoisecount"`
+	// WNoiseDelay is the pause after each datagram in milliseconds, "5" or a
+	// "5-10" range. Default 5, capped at 100.
+	WNoiseDelay string `json:"wnoisedelay"`
+	// WPayloadSize is how many random bytes follow the header, "5" or a "5-10"
+	// range. Default "5-10", capped at 100.
+	WPayloadSize string `json:"wpayloadsize"`
 	// Fingerprint selects a uTLS ClientHello ("chrome", "firefox", ...).
 	// Empty means standard library crypto/tls, which is the recommended
 	// default: ECH works and HTTP/2 is negotiated automatically.
@@ -240,7 +269,26 @@ func (o *transportOptions) validate() error {
 			return err
 		}
 	}
+	// Parsed for both branches so a typo in a range surfaces even when noise
+	// is off, and so the h3 branch below can rely on it having been checked.
+	if _, err := o.noiseConfig(); err != nil {
+		return err
+	}
+	if mode != alpnH3 {
+		if s := strings.ToLower(strings.TrimSpace(o.WNoise)); s != "" && s != noiseNone {
+			return fmt.Errorf("wnoise needs alpn \"h3\": the noise datagrams go out on the "+
+				"QUIC socket so that they open the same 4-tuple as the handshake, and the "+
+				"other paths are TCP (alpn is %q)", mode)
+		}
+		if s := strings.ToLower(strings.TrimSpace(o.QUICVersion)); s != "" && s != "auto" {
+			return fmt.Errorf("quicVersion needs alpn \"h3\": the other paths do not use "+
+				"QUIC (alpn is %q)", mode)
+		}
+	}
 	if mode == alpnH3 {
+		if _, err := o.quicAttempts(); err != nil {
+			return err
+		}
 		// QUIC carries the ClientHello inside an Initial packet, not a TLS
 		// record on a TCP stream, so there is nothing for the fragment writer
 		// to split; and CONNECT/SOCKS5 are TCP, so a proxy cannot carry it.

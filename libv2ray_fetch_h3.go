@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 
 	"github.com/apernet/quic-go"
@@ -28,6 +29,15 @@ import (
 // Everything is torn down by the returned cleanup: the UDP socket is ours, not
 // net/http's, so nothing else will close it.
 func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *connState) (http.RoundTripper, func(), error) {
+	attempts, err := o.quicAttempts()
+	if err != nil {
+		return nil, nil, err
+	}
+	noise, err := o.noiseConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// Our own socket, dialed the same way the TCP path dials: no xray dialer, so
 	// it follows OS routing exactly like the rest of FetchWeb.
 	pktConn, err := net.ListenUDP("udp", &net.UDPAddr{})
@@ -46,7 +56,7 @@ func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *con
 	quicConfig := &quic.Config{
 		// A single version, only to satisfy http3.Transport's validation. The
 		// version actually dialed is chosen per attempt by quicdial.Dial below.
-		Versions:        quicdial.H3[0],
+		Versions:        attempts[0],
 		MaxIdleTimeout:  o.timeout(),
 		KeepAlivePeriod: 0,
 		// The default of quic-go/http3, which differs from plain quic-go's.
@@ -90,7 +100,16 @@ func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *con
 			if err != nil {
 				return nil, fmt.Errorf("h3: cannot resolve %q: %w", target, err)
 			}
-			conn, err := quicdial.Dial(ctx, qcfg, quicdial.H3, pref,
+			// Before the first handshake packet, never after: the filters this
+			// defeats judge a flow on its opening datagram and then stop
+			// looking. A redirect that dials a second address gets its own
+			// burst, because that is a different 4-tuple with its own verdict.
+			if noise != nil {
+				if err := noise.send(ctx, pktConn, udpAddr); err != nil {
+					return nil, err
+				}
+			}
+			conn, err := quicdial.Dial(ctx, qcfg, attempts, pref,
 				func(attempt *quic.Config) (*quic.Conn, error) {
 					return qTransport.DialEarly(ctx, udpAddr, cfg, attempt)
 				})
@@ -118,11 +137,28 @@ func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *con
 	return rt, cleanup, nil
 }
 
+// quicAttempts is the version ladder h3 dials, honouring the quicVersion
+// option. "auto" keeps xray's own ordering and its per-destination
+// stickiness; a pinned version collapses the ladder to a single rung, which
+// also removes the fallback's timeout from the critical path.
+func (o *transportOptions) quicAttempts() ([][]quic.Version, error) {
+	switch strings.ToLower(strings.TrimSpace(o.QUICVersion)) {
+	case "", "auto":
+		return quicdial.H3, nil
+	case "v1", "1", "quicv1":
+		return [][]quic.Version{{quic.Version1}}, nil
+	case "v2", "2", "quicv2":
+		return [][]quic.Version{{quic.Version2}}, nil
+	default:
+		return nil, fmt.Errorf("unknown quicVersion %q (use \"auto\", \"v1\" or \"v2\")", o.QUICVersion)
+	}
+}
+
 // quicVersionsDialed reports the ladder h3 will walk, for documentation and
 // error messages.
-func quicVersionsDialed() string {
+func quicVersionsDialed(attempts [][]quic.Version) string {
 	out := ""
-	for i, attempt := range quicdial.H3 {
+	for i, attempt := range attempts {
 		if i > 0 {
 			out += " then "
 		}

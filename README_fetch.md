@@ -25,14 +25,16 @@ silently ignored:
   be a no-op. Fragment on the direct path.
 * `alpn: "h3"` with `fragment`, `proxy` or `fingerprint` — all three are
   TCP-bound and cannot follow QUIC. See [ALPN](#alpn).
+* `quicVersion` or `wnoise` without `alpn: "h3"` — both act on the QUIC socket,
+  and the other paths are TCP. See [QUIC version and noise](#quic-version-and-noise).
 
 Within `ech` the three acquisition methods are ordered rather than combined:
 `configList` > `probe` > `domain` + `doh`. All three are shown filled in below so
 each shape is visible; in a real config fill the one you want and leave the rest
 empty.
 
-Because `h3` excludes three of these keys, it gets its own complete block after
-the two below.
+Because `h3` excludes three of these keys and adds five of its own, it gets its
+own complete block after the two below.
 
 ### `FetchWeb`
 
@@ -188,6 +190,11 @@ QUIC handshake is Chrome-shaped unless `disableChromeParrot` says otherwise.
   "timeout": 15000,
   "ip": "188.114.97.6",
   "alpn": "h3",
+  "quicVersion": "auto",
+  "wnoise": "none",
+  "wnoisecount": "5",
+  "wnoisedelay": "5",
+  "wpayloadsize": "5-10",
   "disableChromeParrot": false,
   "allowInsecure": false,
   "serverName": "cdn.example.com",
@@ -210,6 +217,10 @@ QUIC v2 is dialled first with a v1 fallback, and being UDP it sidesteps the TCP
 RST injector — which is why it needs no `fragment` to survive a path that resets
 TLS handshakes. `Proto` comes back as `"HTTP/3.0"`.
 
+`quicVersion` pins one version instead of walking the ladder, and the four
+`w*` keys send junk datagrams before the handshake. Both exist for networks
+that filter QUIC by version; see [QUIC version and noise](#quic-version-and-noise).
+
 ---
 
 
@@ -225,6 +236,11 @@ TLS handshakes. `Proto` comes back as `"HTTP/3.0"`.
 | `allowInsecure` | bool | `false` | Skip certificate verification. |
 | `serverName` | string | URL host | SNI / certificate name override. |
 | `alpn` | string | `"auto"` | HTTP version: `auto`, `h1`, `h2`, `h3`. See [ALPN](#alpn). |
+| `quicVersion` | string | `"auto"` | h3 only: `auto` (v2 then v1), `v1`, `v2`. See [QUIC version and noise](#quic-version-and-noise). |
+| `wnoise` | string | `"none"` | h3 only: junk datagrams before the handshake. `none`, `quic`, `quicv1`, `random`, or hex. |
+| `wnoisecount` | string | `"5"` | How many noise datagrams: `"5"` or a `"3-8"` range. Capped at 50. |
+| `wnoisedelay` | string | `"5"` | Pause after each, milliseconds: `"5"` or `"5-10"`. Capped at 100. |
+| `wpayloadsize` | string | `"5-10"` | Random bytes after the header: `"8"` or `"5-10"`. Capped at 100. |
 | `disableChromeParrot` | bool | `false` | h3 only: stop shaping the QUIC handshake like Chrome. |
 | `fingerprint` | string | `""` (stdlib TLS) | uTLS ClientHello. See [Fingerprints](#fingerprints). |
 | `fragment` | object | none | TLS ClientHello splitting. See [Fragment](#fragment). **Cannot be combined with `proxy`.** |
@@ -420,7 +436,7 @@ Pins the HTTP version.
 | `auto` (default) | `h2`, `http/1.1` | Server picks. Every major DoH resolver picks h2. |
 | `h1` | `http/1.1` only | h2 cannot be negotiated. |
 | `h2` | `h2` only | Handshake fails if the server will not speak h2. |
-| `h3` | `h3` over QUIC | QUIC v2 first, falling back to v1. See below. |
+| `h3` | `h3` over QUIC | QUIC v2 first, falling back to v1, unless `quicVersion` pins one. See below. |
 
 `http/1.1`, `http1`, `http2`, `http/2`, `http3`, `quic` are accepted aliases,
 case-insensitive. `h2` and `h3` both require an `https` url — cleartext h2c is
@@ -433,6 +449,9 @@ deliberately: some networks drop QUIC v1 Initial packets outright, and the drop
 poisons the flow before QUIC's own version negotiation can run. The ladder and
 its per-request stickiness come from xray-core's `transport/internet/quicdial`,
 so this shares the core's ordering rather than reimplementing it.
+`quicVersion` overrides the ladder and `wnoise` works around the same v1 drop
+from the other direction; see
+[QUIC version and noise](#quic-version-and-noise).
 
 The handshake is shaped like Chrome's by default (`ChromeParrot` plus a
 zero-length connection ID). `"disableChromeParrot": true` turns that off.
@@ -457,6 +476,110 @@ testing.
 Because the QUIC path is UDP it also sidesteps the TCP SNI-RST injector: a plain
 `h3` request to a pinned Cloudflare IP succeeds where the same request over
 `auto` is reset.
+
+### QUIC version and noise
+
+Both groups of keys exist for one reason: some networks filter QUIC on the
+**version number** in bytes 1..4 of the first datagram of a flow, then cache
+that verdict for the 4-tuple and stop looking. A v1 Initial trips the filter; a
+datagram carrying any other version does not.
+
+```json
+"quicVersion": "auto",
+"wnoise": "none",
+"wnoisecount": "5",
+"wnoisedelay": "5",
+"wpayloadsize": "5-10"
+```
+
+All five are h3-only and are **refused** on the other paths rather than
+ignored, since those are TCP.
+
+#### `quicVersion`
+
+| value | behaviour |
+| --- | --- |
+| `auto` (default) | v2, then v1 if that fails. xray's `quicdial` ladder. |
+| `v1` | v1 only (RFC 9000). |
+| `v2` | v2 only (RFC 9369). |
+
+`1`, `2`, `quicv1`, `quicv2` are accepted aliases, case-insensitive.
+
+Worth pinning in two opposite situations:
+
+- **The peer ignores v2 instead of negotiating it.** Cloudflare's edge does
+  exactly this — it advertises only `00000001` and drops v2 Initials silently
+  rather than answering Version Negotiation. `auto` therefore burns a whole
+  handshake timeout on the v2 rung before it ever reaches v1, so `"v1"` is much
+  faster against Cloudflare.
+- **The network drops v1.** Then `"v2"` is the only version that gets through
+  at all — but only against a server that implements it. Measured v2 speakers:
+  `interop.seemann.io`, `caddyserver.com`, `quic.aiortc.org`, `nghttp2.org`.
+  Google and Fastly are v1-only; Cloudflare is v1-only. Note that a Version
+  Negotiation list is not a reliable capability check — `nghttp2.org`
+  advertises no v2 and then completes a v2 handshake anyway.
+
+#### `wnoise`
+
+Sends junk datagrams on the QUIC socket **before** the handshake, so the
+filter judges the flow on those rather than on a v1 Initial.
+
+| value | what is sent |
+| --- | --- |
+| `none` (default) | nothing |
+| `quic` | an 18-byte pseudo-QUIC long header carrying version `6b3343cf` (v2) |
+| `quicv1` | the same header carrying `00000001` (v1) |
+| `random` | 18 random bytes |
+| hex, e.g. `"d06b3343cf"` | those bytes verbatim, up to 50 bytes |
+
+Each datagram is the header followed by `wpayloadsize` random bytes; after each
+one there is a `wnoisedelay` pause, the last included, so the gap before the
+handshake is real. Counts and ranges take either a single number or `from-to`,
+both ends inclusive.
+
+This is the same vocabulary as an xray WireGuard outbound's `wnoise`, and the
+packets are byte-for-byte what xray's WireGuard noise sends, so a value that
+works there works here. One deliberate difference: xray silently ignores
+malformed `wnoise` hex and sends nothing, whereas here it is an error — sending
+no noise looks exactly like noise that did not help, which is the worst thing
+to have to debug.
+
+Ordering is the whole mechanism, so two rules follow:
+
+- Noise only ever helps **before** the first real packet. A flow that opens
+  with a v1 Initial stays poisoned, and no amount of noise afterwards rescues
+  it.
+- `"quicv1"` is self-defeating as a prime: v1 noise trips the same filter the
+  real handshake would. It is offered only for parity with xray, where it is
+  used to *imitate* QUIC rather than to evade a version filter.
+
+A redirect that dials a second address gets its own burst, because that is a
+different 4-tuple with its own verdict.
+
+#### What to expect
+
+Measured against `cloudflare-dns.com` at a pinned edge IP from a filtered
+Iranian path, QUIC v1, 22 attempts per arm across two runs:
+
+| `wnoise` | v1 handshakes |
+| --- | --- |
+| `none` | **0 / 22** |
+| `quicv1` | **0 / 10** |
+| `quic` | 5 / 22 |
+| `random` | 5 / 22 |
+| `"00"` (one byte) | 8 / 34 |
+
+The two zeroes are the real result and they are reproducible: without noise it
+never works, and v1-shaped noise never works, which is what confirms the filter
+is keyed on the version number. The differences *between* the working shapes
+are within run-to-run variance — `"00"` scored 5/10 in one run and 0/12 in the
+next — so do not read a ranking into them.
+
+Be honest with users about the success rate: on that path noise turned "never"
+into roughly one attempt in four, not into a reliable transport. A successful
+handshake completed in about 150–260 ms, so failures are timeouts and a retry
+is cheap; if h3 matters, retry rather than assuming one attempt settles it.
+`fragment` plus `ech` over TCP remained far more dependable there.
 
 On the standard TLS path the offer is ours, so `alpn` is enforced exactly. With
 `"h2"` the request is driven through `x/net/http2` directly, because
@@ -625,7 +748,9 @@ header and SNI stay the hostname, only the address dialled changes.
 ### Fetch over HTTP/3
 
 QUIC is UDP, so this path sidesteps the TCP RST injector entirely — and QUIC v2
-is tried before v1, which matters where v1 Initial packets are dropped.
+is tried before v1, which matters where v1 Initial packets are dropped. Both
+halves of that are tunable: `quicVersion` pins the version, `wnoise` primes the
+flow first.
 
 ```json
 {
@@ -638,6 +763,26 @@ is tried before v1, which matters where v1 Initial packets are dropped.
 
 `fragment`, `proxy` and `fingerprint` are **refused** with `h3` rather than
 silently ignored — all three are TCP-bound. `ip` and `ech` work normally.
+
+Where v1 Initials are dropped and the peer does not speak v2 — Cloudflare is
+both — prime the flow with noise and dial v1 directly, which also skips the
+timeout `auto` would spend on the v2 rung:
+
+```json
+{
+  "url": "https://cloudflare-dns.com/dns-query?name=example.com&type=A",
+  "timeout": 15000,
+  "alpn": "h3",
+  "ip": "104.16.248.249",
+  "quicVersion": "v1",
+  "wnoise": "quic",
+  "wnoisecount": "5",
+  "ech": { "probe": "cloudflare-ech.com@104.16.248.249" }
+}
+```
+
+Expect this to need retries — see
+[QUIC version and noise](#quic-version-and-noise) for measured success rates.
 
 ### DNS lookup
 
@@ -717,8 +862,9 @@ because quic-go's uTLS bridge drops the flag — sound, since both TLS stacks
 return `ECHRejectionError` when a server refuses a config. See [ALPN](#alpn).
 
 **HTTP versions.** HTTP/1.1, HTTP/2 and HTTP/3; see [ALPN](#alpn) to pin one.
-`h3` runs over QUIC v2 with a v1 fallback, and refuses `fragment`, `proxy` and
-`fingerprint`, none of which can follow it off TCP. On the uTLS path ALPN comes
+`h3` runs over QUIC v2 with a v1 fallback — overridable with `quicVersion`, and
+`wnoise` can prime the flow before the handshake — and refuses `fragment`,
+`proxy` and `fingerprint`, none of which can follow it off TCP. On the uTLS path ALPN comes
 from the fingerprint rather than from us, so the handshake happens in the dialer
 and the negotiated protocol picks between `net/http` and `x/net/http2`. Redirects
 that cross an HTTP-version boundary fail with an explicit error rather than
