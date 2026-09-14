@@ -237,10 +237,10 @@ that filter QUIC by version; see [QUIC version and noise](#quic-version-and-nois
 | `serverName` | string | URL host | SNI / certificate name override. |
 | `alpn` | string | `"auto"` | HTTP version: `auto`, `h1`, `h2`, `h3`. See [ALPN](#alpn). |
 | `quicVersion` | string | `"auto"` | h3 only: `auto` (v2 then v1), `v1`, `v2`. See [QUIC version and noise](#quic-version-and-noise). |
-| `wnoise` | string | `"none"` | h3 only: junk datagrams before the handshake. `none`, `quic`, `quicv1`, `random`, or hex. |
+| `wnoise` | string | `"none"` | h3 only: junk datagrams before the handshake. `none`, `quicinit` (the reliable one), `quic`, `quicv1`, `random`, or hex. |
 | `wnoisecount` | string | `"5"` | How many noise datagrams: `"5"` or a `"3-8"` range. Capped at 50. |
 | `wnoisedelay` | string | `"5"` | Pause after each, milliseconds: `"5"` or `"5-10"`. Capped at 100. |
-| `wpayloadsize` | string | `"5-10"` | Random bytes after the header: `"8"` or `"5-10"`. Capped at 100. |
+| `wpayloadsize` | string | `"5-10"` | Random bytes after the header: `"8"` or `"5-10"`. Capped at 100. Not used by `quicinit`. |
 | `disableChromeParrot` | bool | `false` | h3 only: stop shaping the QUIC handshake like Chrome. |
 | `fingerprint` | string | `""` (stdlib TLS) | uTLS ClientHello. See [Fingerprints](#fingerprints). |
 | `fragment` | object | none | TLS ClientHello splitting. See [Fragment](#fragment). **Cannot be combined with `proxy`.** |
@@ -527,19 +527,59 @@ filter judges the flow on those rather than on a v1 Initial.
 | value | what is sent |
 | --- | --- |
 | `none` (default) | nothing |
+| **`quicinit`** | **a complete, structurally valid 1200-byte QUIC v2 client Initial. The one that reliably works — see below.** |
 | `quic` | an 18-byte pseudo-QUIC long header carrying version `6b3343cf` (v2) |
 | `quicv1` | the same header carrying `00000001` (v1) |
 | `random` | 18 random bytes |
 | hex, e.g. `"d06b3343cf"` | those bytes verbatim, up to 50 bytes |
 
-Each datagram is the header followed by `wpayloadsize` random bytes; after each
-one there is a `wnoisedelay` pause, the last included, so the gap before the
-handshake is real. Counts and ranges take either a single number or `from-to`,
-both ends inclusive.
+For every preset except `quicinit`, each datagram is the header followed by
+`wpayloadsize` random bytes; after each one there is a `wnoisedelay` pause, the
+last included, so the gap before the handshake is real. Counts and ranges take
+either a single number or `from-to`, both ends inclusive.
 
-This is the same vocabulary as an xray WireGuard outbound's `wnoise`, and the
-packets are byte-for-byte what xray's WireGuard noise sends, so a value that
-works there works here. One deliberate difference: xray silently ignores
+`quicinit` is a whole packet of a fixed size, so `wpayloadsize` does not apply
+to it, and one datagram is enough — use `"wnoisecount": "1"`.
+
+#### Why the prime has to look like a real Initial
+
+This is the part that decides whether noise works at all, and it was measured
+by ablation against Cloudflare edges, changing one field at a time:
+
+| what was varied | result |
+| --- | --- |
+| **size** 1200 B | **10/10** |
+| size 1100 B | 4/10 |
+| size 1000 B and below | 0-3/10 |
+| **first byte** `0xc0`, `0xc3`, `0xcf` | **10/10** |
+| first byte `0xd0`, `0xf0` | 0/10 |
+| first byte `0xdc`, `0xe0`, `0xee` (xray's `clist`) | 1-3/10 |
+| **version** v2 `6b3343cf`, or a reserved value | **10/10** |
+| version draft-29 `ff00001d`, or v1 | 0/10 |
+| padding zero vs random, SCID length, length varint | no effect, 10/10 either way |
+
+So the prime must satisfy three things at once: a first byte in `0xc0-0xcf`
+(the long-header **Initial** encoding), a version that is not v1 or a draft,
+and the RFC 9000 §14.1 minimum size of **1200 bytes**. A classifier evidently
+only files a flow as QUIC when it sees a datagram that could actually be a
+conformant client Initial; a 26-byte packet is not one, so no flow state is
+created and the real v1 Initial that follows becomes the first Initial it
+sees — and gets dropped.
+
+Note the first byte is the **v1** meaning of the type bits even though the
+version field says v2, where `0b00` would be Retry. The classifier matches the
+v1 encoding rather than honouring RFC 9369's remap.
+
+This is also why `quic` and `random` are weak here while xray's WireGuard noise
+works well with the same values: a WireGuard flow only needs an opening
+datagram that is *not* a WireGuard handshake, and 18 bytes of junk qualifies.
+A QUIC flow on UDP/443 needs an opening datagram that positively parses as an
+Initial, which 18 bytes cannot.
+
+`quic`, `quicv1`, `random` and the hex form are the same vocabulary as an xray
+WireGuard outbound's `wnoise`, and are byte-for-byte what xray's WireGuard
+noise sends, so a value that works there works here. `quicinit` is additional
+and has no xray counterpart. One deliberate difference: xray silently ignores
 malformed `wnoise` hex and sends nothing, whereas here it is an error — sending
 no noise looks exactly like noise that did not help, which is the worst thing
 to have to debug.
@@ -558,28 +598,46 @@ different 4-tuple with its own verdict.
 
 #### What to expect
 
-Measured against `cloudflare-dns.com` at a pinned edge IP from a filtered
-Iranian path, QUIC v1, 22 attempts per arm across two runs:
+Measured against Cloudflare edges from a filtered Iranian path, QUIC v1:
 
 | `wnoise` | v1 handshakes |
 | --- | --- |
 | `none` | **0 / 22** |
 | `quicv1` | **0 / 10** |
-| `quic` | 5 / 22 |
-| `random` | 5 / 22 |
-| `"00"` (one byte) | 8 / 34 |
+| `quic` (18-byte header) | 5 / 22 |
+| `random` (18 bytes) | 5 / 22 |
+| **`quicinit`** | **10 / 10, repeatedly, on every h3-capable target tried** |
 
-The two zeroes are the real result and they are reproducible: without noise it
-never works, and v1-shaped noise never works, which is what confirms the filter
-is keyed on the version number. The differences *between* the working shapes
-are within run-to-run variance — `"00"` scored 5/10 in one run and 0/12 in the
-next — so do not read a ranking into them.
+`quicinit` is the one to use. End to end through `FetchWeb` against
+`cloudflare-dns.com` it connected 8/8 with HTTP 200 at about 340 ms; the
+small-header presets land around one attempt in four, and without noise it
+never connects at all.
 
-Be honest with users about the success rate: on that path noise turned "never"
-into roughly one attempt in four, not into a reliable transport. A successful
-handshake completed in about 150–260 ms, so failures are timeouts and a retry
-is cheap; if h3 matters, retry rather than assuming one attempt settles it.
-`fragment` plus `ech` over TCP remained far more dependable there.
+The two zeroes are reproducible and are what identify the mechanism: without
+noise it never works, and v1-shaped noise never works.
+
+#### First check the zone actually offers HTTP/3
+
+Before concluding a name is filtered, confirm the origin serves h3 at all.
+Cloudflare answers QUIC only for zones with HTTP/3 enabled, and a zone with it
+switched off is indistinguishable from a block: the handshake just times out.
+
+```json
+{ "domain": "npmjs.com", "type": "HTTPS", "timeout": 20000,
+  "server": "https://cloudflare-dns.com/dns-query", "ip": "104.16.248.249",
+  "ech": { "probe": "cloudflare-ech.com@104.16.248.249" } }
+```
+
+The HTTPS record's `alpn` list is authoritative. `cloudflare-dns.com`,
+`www.cloudflare.com` and `blog.cloudflare.com` publish `alpn="h3,h2"` and all
+connect over h3 with `quicinit`. `npmjs.com` and `www.npmjs.com` publish
+`alpn="h2"` — no h3 — so no amount of noise will make h3 work for them;
+`chatgpt.com` and `x.com` publish no HTTPS record and likewise never connect,
+while all four fetch fine over TCP. `Alt-Svc` on a plain TCP response carries
+the same signal, but read it from a 2xx: Cloudflare's 403 block page omits the
+header even for zones that do support h3.
+
+For those hosts use the TCP path with `ech` or `fragment` instead.
 
 On the standard TLS path the offer is ours, so `alpn` is enforced exactly. With
 `"h2"` the request is driven through `x/net/http2` directly, because
@@ -775,14 +833,15 @@ timeout `auto` would spend on the v2 rung:
   "alpn": "h3",
   "ip": "104.16.248.249",
   "quicVersion": "v1",
-  "wnoise": "quic",
-  "wnoisecount": "5",
-  "ech": { "probe": "cloudflare-ech.com@104.16.248.249" }
+  "wnoise": "quicinit",
+  "wnoisecount": "1",
+  "headers": { "Accept": "application/dns-json" }
 }
 ```
 
-Expect this to need retries — see
-[QUIC version and noise](#quic-version-and-noise) for measured success rates.
+Measured 8/8 at ~340 ms. `quicinit` is what makes this reliable; the other
+presets land nearer one in four. See
+[QUIC version and noise](#quic-version-and-noise).
 
 ### DNS lookup
 
