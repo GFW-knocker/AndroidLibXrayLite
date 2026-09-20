@@ -1,7 +1,7 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r4 h1:72QxDfBs9MZCjtpBUWnM4MGL15keoCWQsArg/fIemrM=
-github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r4/go.mod h1:fFqtTjKlJd4+D+Zz3eNLZgeyK1m5dVQozTOyojC0sng=
+github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r5 h1:vOYEX+LpFo1hD10Hs+b0mYY1apalO9DVinsiOcwvUpw=
+github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r5/go.mod h1:fFqtTjKlJd4+D+Zz3eNLZgeyK1m5dVQozTOyojC0sng=
 github.com/GFW-knocker/wireguard v1.0.8 h1:6TWHVp/Xm6TRI4iHUCv7aPS8mXlTp6tMsk3xBHTW+tU=
 github.com/GFW-knocker/wireguard v1.0.8/go.mod h1:lkzRoCibuOeA2/KOpo1AnppBT+v1uY/NNH0Nc2uBsEM=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=

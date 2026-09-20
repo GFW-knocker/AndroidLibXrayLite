@@ -3,7 +3,7 @@ module github.com/GFW-knocker/AndroidLibXrayLite
 go 1.26.7
 
 require (
-	github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r4
+	github.com/GFW-knocker/Xray-core v1.26.9-mahsa-r5
 	github.com/apernet/quic-go v0.61.1-0.20260806010916-184d081eef3e
 	github.com/miekg/dns v1.1.73
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
