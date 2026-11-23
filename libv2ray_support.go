@@ -350,7 +350,7 @@ func (d *ProtectedDialer) fdConn(ctx context.Context, ip net.IP, port int, fd in
 		}
 		// Dest must be a *net.UDPAddr: callers reach it through
 		// PacketConnWrapper.RemoteAddr() and assert that type.
-		return &v2internet.PacketConnWrapper{
+		return &v2net.PacketConnWrapper{
 			PacketConn: pktConn,
 			Dest:       &net.UDPAddr{IP: ip, Port: port},
 		}, nil

@@ -465,13 +465,11 @@ each is TCP-bound:
 | `proxy` | CONNECT and SOCKS5 carry TCP only |
 | `fingerprint` | a uTLS ClientHello is TLS-over-TCP; QUIC has its own handshake |
 
-`ip` pinning and `ech` both work normally. One caveat on reporting: quic-go's
-uTLS bridge rebuilds the handshake state without copying `ECHAccepted`, so that
-flag cannot be read back on the parrot path. `EchAccepted` is instead inferred
-from the handshake completing — sound, because both TLS stacks return
-`ECHRejectionError` when a server refuses an offered config. Setting
-`disableChromeParrot` makes the flag directly readable again; the two agree in
-testing.
+`ip` pinning and `ech` both work normally. On reporting: `EchAccepted` is
+inferred from the handshake completing — sound, because both TLS stacks return
+`ECHRejectionError` when a server refuses an offered config. (quic-go's uTLS
+bridge dropped the flag on the parrot path before v0.63; it copies it now, and
+the inference gives the same answer either way.)
 
 Because the QUIC path is UDP it also sidesteps the TCP SNI-RST injector: a plain
 `h3` request to a pinned Cloudflare IP succeeds where the same request over
@@ -842,9 +840,9 @@ fails rather than falling back to a plaintext SNI. A missing record gives
 
 **`EchAccepted` is the ground truth, not "a config was found".** On the TCP
 paths it is read from the TLS connection state, so `false` with no error means
-the server declined ECH. On `h3` it is inferred from the handshake completing,
-because quic-go's uTLS bridge drops the flag — sound, since both TLS stacks
-return `ECHRejectionError` when a server refuses a config. See [ALPN](#alpn).
+the server declined ECH. On `h3` it is inferred from the handshake completing —
+sound, since both TLS stacks return `ECHRejectionError` when a server refuses a
+config. See [ALPN](#alpn).
 
 **HTTP versions.** HTTP/1.1, HTTP/2 and HTTP/3; see [ALPN](#alpn) to pin one.
 `h3` runs over QUIC v2 with a v1 fallback — overridable with `quicVersion`, and

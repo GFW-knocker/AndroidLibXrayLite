@@ -116,11 +116,12 @@ func (o *transportOptions) h3RoundTripper(u *url.URL, echList []byte, state *con
 			if err != nil {
 				return nil, err
 			}
-			// quic-go's utls bridge drops ECHAccepted when it converts the
-			// handshake state, so that field cannot be trusted here. It does not
-			// need to be: the TLS stacks return ECHRejectionError when a server
-			// refuses an offered config, so a handshake that completed with a
-			// config list in hand is a handshake where ECH was accepted.
+			// The TLS stacks return ECHRejectionError when a server refuses an
+			// offered config, so a handshake that completed with a config list
+			// in hand is a handshake where ECH was accepted. quic-go's utls
+			// bridge used to drop ECHAccepted when converting the handshake
+			// state; it copies it since v0.63, but the inference is kept because
+			// it needs nothing from the bridge and gives the same answer.
 			if err := state.record("h3", len(echList) > 0); err != nil {
 				conn.CloseWithError(0, "")
 				return nil, err

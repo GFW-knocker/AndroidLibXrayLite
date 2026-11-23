@@ -704,9 +704,9 @@ func (s *connState) snapshot() (string, bool) {
 // A connState recording always wins when present: the dialer that made it read
 // the handshake directly. Response.TLS is the fallback for the standard TLS
 // path, where net/http owns the handshake and nothing was recorded. It must not
-// win over a recording, because on the h3 path quic-go's uTLS bridge rebuilds
-// the state without copying ECHAccepted, so Response.TLS reports false there
-// even when the server accepted ECH.
+// win over a recording: on the h3 path, quic-go's uTLS bridge before v0.63
+// rebuilt the state without copying ECHAccepted, so Response.TLS reported false
+// there even when the server accepted ECH.
 func echAcceptedFrom(state *connState, resp *http.Response) bool {
 	state.mu.Lock()
 	recorded, known := state.echAccepted, state.set
