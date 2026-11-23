@@ -15,13 +15,16 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	mobasset "golang.org/x/mobile/asset"
 
+	"github.com/GFW-knocker/Xray-core/app/proxyman"
 	v2net "github.com/GFW-knocker/Xray-core/common/net"
+	"github.com/GFW-knocker/Xray-core/common/serial"
 	v2filesystem "github.com/GFW-knocker/Xray-core/common/platform/filesystem"
 	v2core "github.com/GFW-knocker/Xray-core/core"
 	v2stats "github.com/GFW-knocker/Xray-core/features/stats"
@@ -200,10 +203,10 @@ func GetDataFromWeb(myurl string, mydata string, my_proxy string, mytimeout int,
 	} else {
 		var err error
 		req, err = http.NewRequest("GET", myurl, nil)
-		req.Header.Set("User-Agent", uagent_string)
 		if err != nil {
 			return &WebResult{"", "", err.Error()}
 		}
+		req.Header.Set("User-Agent", uagent_string)
 
 	}
 
@@ -341,9 +344,8 @@ func MeasureOutboundDelay(ConfigureFileContent string, url string) (int64, error
 
 	// dont listen to anything for test purpose
 	config.Inbound = nil
-	// config.App: (fakedns), log, dispatcher, InboundConfig, OutboundConfig, (stats), router, dns, (policy)
 	// keep only basic features
-	config.App = config.App[:5]
+	config.App = measureApps(config.App)
 
 	inst, err := v2core.New(config)
 	if err != nil {
@@ -354,6 +356,51 @@ func MeasureOutboundDelay(ConfigureFileContent string, url string) (int64, error
 	delay, err := measureInstDelay(context.Background(), inst, url)
 	inst.Close()
 	return delay, err
+}
+
+// measureApps picks the apps MeasureOutboundDelay keeps: the first five, in the
+// order cores before v1.26.11 built them:
+//
+//	(fakedns), log, dispatcher, InboundConfig, OutboundConfig, (api), (metrics),
+//	(stats), router, dns, (policy), ...
+//
+// Since v1.26.11 the core appends InboundConfig last instead, so a plain
+// App[:5] would drop it and shift the next app into the five -- the DNS app,
+// in a typical config -- changing what the delay test measures. Moving it back
+// in front of OutboundConfig keeps the old selection exactly, and is a no-op on
+// an older core. Unlike App[:5], this never slices past len on a config with
+// fewer than five apps.
+func measureApps(apps []*serial.TypedMessage) []*serial.TypedMessage {
+	inboundType := serial.GetMessageType(&proxyman.InboundConfig{})
+	outboundType := serial.GetMessageType(&proxyman.OutboundConfig{})
+
+	ordered := make([]*serial.TypedMessage, 0, len(apps))
+	var inbound *serial.TypedMessage
+	for _, app := range apps {
+		if app == nil {
+			continue
+		}
+		if inbound == nil && app.Type == inboundType {
+			inbound = app
+			continue
+		}
+		ordered = append(ordered, app)
+	}
+	if inbound != nil {
+		at := len(ordered)
+		for i, app := range ordered {
+			if app.Type == outboundType {
+				at = i
+				break
+			}
+		}
+		ordered = slices.Insert(ordered, at, inbound)
+	}
+
+	if len(ordered) > 5 {
+		ordered = ordered[:5]
+	}
+	return ordered
 }
 
 /*NewV2RayPoint new V2RayPoint*/
@@ -407,17 +454,20 @@ func measureInstDelay(ctx context.Context, inst *v2core.Instance, url string) (i
 	if len(url) <= 0 {
 		url = "https://www.google.com/generate_204"
 	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return -1, err
+	}
 	start := time.Now()
 	resp, err := c.Do(req)
 	if err != nil {
 		return -1, err
 	}
+	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return -1, fmt.Errorf("status != 20x: %s", resp.Status)
 	}
-	resp.Body.Close()
 	return time.Since(start).Milliseconds(), nil
 }
 
