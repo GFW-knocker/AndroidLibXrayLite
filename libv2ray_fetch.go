@@ -115,8 +115,7 @@ type transportOptions struct {
 	// ServerName overrides the SNI / certificate name.
 	ServerName string `json:"serverName"`
 	// DisableChromeParrot turns off the Chrome-shaped QUIC handshake on the h3
-	// path. It is on by default; turning it off also makes EchAccepted
-	// reportable, since quic-go's uTLS bridge drops that flag.
+	// path. It is on by default.
 	DisableChromeParrot bool `json:"disableChromeParrot"`
 	// ALPN pins the HTTP version: "auto" (default) offers h2 and http/1.1 and
 	// lets the server pick, "h1" offers only http/1.1, "h2" offers only h2,

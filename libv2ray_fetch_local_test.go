@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/apernet/quic-go/http3"
@@ -33,7 +34,10 @@ func echoHandler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		ech := r.TLS != nil && r.TLS.ECHAccepted
-		fmt.Fprintf(w, "proto=%s method=%s body=%s ech=%v", r.Proto, r.Method, body, ech)
+		// FetchResult.RespHeader reports this header.
+		w.Header().Set("X-From-Server", "test-server")
+		fmt.Fprintf(w, "proto=%s method=%s body=%s ech=%v ua=%q xh=%q auth=%q", r.Proto, r.Method, body, ech,
+			r.UserAgent(), r.Header.Get("X-Test-Header"), r.Header.Get("Authorization"))
 	})
 	mux.HandleFunc("/redirect", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
@@ -293,5 +297,110 @@ func TestFetchWebBadInputNoPanic(t *testing.T) {
 		if r := ResolveDoH(in); r == nil || r.RespError == "" {
 			t.Errorf("ResolveDoH(%s) gave no error: %+v", in, r)
 		}
+	}
+}
+
+// connectProxy is a minimal HTTP CONNECT proxy, standing in for a running
+// xray's http inbound.
+func connectProxy(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
+	var tunnels atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
+			return
+		}
+		up, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		hj, _ := w.(http.Hijacker)
+		w.WriteHeader(http.StatusOK)
+		down, _, err := hj.Hijack()
+		if err != nil {
+			up.Close()
+			return
+		}
+		tunnels.Add(1)
+		go func() { io.Copy(up, down); up.Close() }()
+		go func() { io.Copy(down, up); down.Close() }()
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, &tunnels
+}
+
+// Option combinations the other tests leave out: a pinned "ip" with the real
+// host in the URL, fragment "lengths"/"delays" lists with "maxSplit", an ECH
+// probe written without a scheme, an http proxy, and a custom userAgent and
+// headers on top of the "golang" browser profile.
+func TestFetchWebOptionCombinations(t *testing.T) {
+	s := startLocalServers(t)
+	host, port, _ := net.SplitHostPort(s.tlsAddr)
+	url := "https://" + net.JoinHostPort(testHost, port) + "/api"
+
+	// A zero-length first record is a valid fragment setting, but Go's TLS
+	// server rejects a zero-length handshake record, so it is checked
+	// separately below and the full exchange runs with non-empty records.
+	fragment := func(lengths ...string) map[string]any {
+		return map[string]any{
+			"url": url, "method": "POST", "data": `{"key":"x"}`, "ip": host, "alpn": "h2",
+			"timeout": 8000, "allowInsecure": true,
+			"fragment": map[string]any{"packets": "tlshello", "lengths": lengths,
+				"delays": []string{"0"}, "maxSplit": "1000"},
+			"browser": "golang", "userAgent": "test-agent/1.0",
+			"headers": map[string]string{"Content-Type": "application/json; charset=UTF-8", "X-Test-Header": "test-value"},
+		}
+	}
+	fragRoute := fragment("30-50")
+	t.Run("fragment-empty-record-sent", func(t *testing.T) {
+		raw, _ := json.Marshal(fragment("0", "30-50"))
+		// The Go server answering unexpected_message proves the empty record
+		// reached it ahead of the ClientHello.
+		if r := FetchWeb(string(raw)); !strings.Contains(r.RespError, "unexpected message") {
+			t.Fatalf("want the Go server to reject the empty record, got status %d err %q", r.StatusCode, r.RespError)
+		}
+	})
+	// "public name @ address", no scheme.
+	echRoute := map[string]any{
+		"url": url, "method": "POST", "data": `{"key":"x"}`, "ip": host, "alpn": "h2",
+		"timeout": 8000, "allowInsecure": true,
+		"ech":     map[string]any{"probe": "public.example@" + s.tlsAddr},
+		"browser": "golang", "userAgent": "test-agent/1.0",
+		"headers": map[string]string{"X-Test-Header": "test-value", "Authorization": "Bearer test-token"},
+	}
+	proxyURL, tunnels := connectProxy(t)
+	viaProxy := map[string]any{
+		"url": url, "method": "POST", "data": `{"key":"x"}`, "ip": host, "timeout": 8000, "allowInsecure": true,
+		"proxy": proxyURL, "browser": "golang", "userAgent": "test-agent/2.0",
+		"headers": map[string]string{"X-Test-Header": "test-value"},
+	}
+
+	for name, o := range map[string]map[string]any{"fragment": fragRoute, "ech": echRoute, "proxy": viaProxy} {
+		t.Run(name, func(t *testing.T) {
+			raw, _ := json.Marshal(o)
+			r := FetchWeb(string(raw))
+			if r.RespError != "" || r.StatusCode != 200 {
+				t.Fatalf("status %d err %q", r.StatusCode, r.RespError)
+			}
+			if r.RespHeader != "test-server" {
+				t.Errorf("RespHeader = %q, want test-server", r.RespHeader)
+			}
+			if !strings.Contains(r.RespBody, `method=POST body={"key":"x"}`) {
+				t.Errorf("server saw %q", r.RespBody)
+			}
+			if !strings.Contains(r.RespBody, `xh="test-value"`) || !strings.Contains(r.RespBody, `ua="`+o["userAgent"].(string)+`"`) {
+				t.Errorf("headers lost: %q", r.RespBody)
+			}
+			if name == "ech" && (!r.EchAccepted || !strings.Contains(r.RespBody, "ech=true") || !strings.Contains(r.RespBody, `auth="Bearer test-token"`)) {
+				t.Errorf("ECH route: EchAccepted=%v, server saw %q", r.EchAccepted, r.RespBody)
+			}
+			if name != "proxy" && r.Proto != "HTTP/2.0" {
+				t.Errorf("Proto = %q, want HTTP/2.0", r.Proto)
+			}
+		})
+	}
+	if tunnels.Load() == 0 {
+		t.Error("the proxy route did not go through the proxy")
 	}
 }

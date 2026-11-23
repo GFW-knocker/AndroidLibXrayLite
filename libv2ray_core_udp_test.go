@@ -478,8 +478,7 @@ func appTypes(apps []*serial.TypedMessage) []string {
 }
 
 // The selection must match what App[:5] picked on cores before v1.26.11, for
-// every shape of config MahsaNG generates (stats/policy only with the speed
-// display on, fakedns optional).
+// the usual config shapes (with or without stats/policy, fakedns optional).
 func TestMeasureAppsMatchesPreBumpSelection(t *testing.T) {
 	var (
 		tLog      = serial.GetMessageType(&applog.Config{})
