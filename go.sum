@@ -1,7 +1,7 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GFW-knocker/Xray-core v1.26.11-mahsa-r1 h1:qfXllyzcPIo/dFAah+Iq8lx1b1UKJ+wh48tPb14RAzs=
-github.com/GFW-knocker/Xray-core v1.26.11-mahsa-r1/go.mod h1:c02mQ9LIOQAmzpncmH8wlLVI6eiYssX3ay6A8+W6RJc=
+github.com/GFW-knocker/Xray-core v1.26.11-mahsa-r2 h1:HhxE/6qTbIMarDrfmNufcupKFBry7FUOe057H4uWi/E=
+github.com/GFW-knocker/Xray-core v1.26.11-mahsa-r2/go.mod h1:c02mQ9LIOQAmzpncmH8wlLVI6eiYssX3ay6A8+W6RJc=
 github.com/GFW-knocker/wireguard v1.0.8 h1:6TWHVp/Xm6TRI4iHUCv7aPS8mXlTp6tMsk3xBHTW+tU=
 github.com/GFW-knocker/wireguard v1.0.8/go.mod h1:lkzRoCibuOeA2/KOpo1AnppBT+v1uY/NNH0Nc2uBsEM=
 github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c h1:cxK8qTA0YCsj68A7zLYDCfPgMTOyt3ePkHh+oXEmYU0=
