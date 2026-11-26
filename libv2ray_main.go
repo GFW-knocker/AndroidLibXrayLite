@@ -335,7 +335,8 @@ func InitV2Env(envPath string, key string) {
 	}
 }
 
-func MeasureOutboundDelay(ConfigureFileContent string, url string) (int64, error) {
+func MeasureOutboundDelay(ConfigureFileContent string, url string) (delay int64, err error) {
+	defer recoverToError(&delay, &err)
 
 	config, err := v2serial.LoadJSONConfig(strings.NewReader(ConfigureFileContent))
 	if err != nil {
@@ -351,11 +352,23 @@ func MeasureOutboundDelay(ConfigureFileContent string, url string) (int64, error
 	if err != nil {
 		return -1, err
 	}
+	// deferred, so a panic while measuring still closes it
+	defer inst.Close()
 
 	inst.Start()
-	delay, err := measureInstDelay(context.Background(), inst, url)
-	inst.Close()
-	return delay, err
+	return measureInstDelay(context.Background(), inst, url)
+}
+
+// recoverToError, deferred first thing in an exported call, turns a panic on
+// the calling goroutine into a failed result (-1 and an error). Under gomobile
+// a panic nobody recovers kills the whole process, and the app's test service
+// shares its process with the VPN. A panic in a goroutine the core started on
+// its own can't be caught from here.
+func recoverToError(ms *int64, err *error) {
+	if r := recover(); r != nil {
+		*ms = -1
+		*err = fmt.Errorf("panic: %v", r)
+	}
 }
 
 // measureApps picks the apps MeasureOutboundDelay keeps: the first five, in the
